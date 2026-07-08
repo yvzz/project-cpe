@@ -22,8 +22,7 @@ md5 = "0.7"
 hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
-lettre = "0.11"
-native-tls = "0.2"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls", "hostname"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

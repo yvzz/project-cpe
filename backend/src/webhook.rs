@@ -216,35 +216,33 @@ impl WebhookSender {
     #[allow(clippy::unused_async)]
     async fn send_email(&self, cfg: &EmailConfig, payload: &str) -> Result<(), String> {
         use lettre::message::{Mailbox, MessageBuilder, MultiPart, SinglePart};
-        use lettre::transport::smtp::client::TlsParameters;
-        use lettre::transport::smtp::client::Tls as SmtpTls;
-        use lettre::SmtpTransport;
-        use lettre::Transport;
+        use lettre::transport::smtp::client::{Tls, TlsParameters};
+        use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
         use std::time::Duration;
-        
+
         if cfg.smtp_host.is_empty() || cfg.username.is_empty() || cfg.to_addresses.is_empty() {
             return Err("Email config is incomplete".to_string());
         }
-        
+
         // 解析收件人
         let to_addresses: Vec<&str> = cfg.to_addresses.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
         if to_addresses.is_empty() {
             return Err("No valid recipient email address".to_string());
         }
-        
+
         // 从 payload 解析 subject 和 body（payload 格式: "SUBJECT\n\nBODY"）
         let (subject, body) = if let Some(pos) = payload.find("\n\n") {
             (payload[..pos].to_string(), payload[pos + 2..].to_string())
         } else {
             ("[CPE] 通知消息".to_string(), payload.to_string())
         };
-        
+
         let subject = if cfg.subject_prefix.is_empty() {
             subject
         } else {
             format!("{} {}", cfg.subject_prefix.trim(), subject)
         };
-        
+
         // 构建发件人 Mailbox
         let from_str = if cfg.from_name.is_empty() {
             cfg.username.clone()
@@ -253,23 +251,23 @@ impl WebhookSender {
         };
         let from: Mailbox = from_str.parse()
             .map_err(|e| format!("Invalid from address: {}", e))?;
-        
+
         // 解析第一个收件人
         let first_to: Mailbox = to_addresses[0].parse()
             .map_err(|e| format!("Invalid to address: {}", e))?;
-        
+
         // 构建邮件
         let mut email_builder = MessageBuilder::new()
             .to(first_to)
             .subject(&subject)
             .from(from);
-        
+
         // 添加抄送收件人
         for addr in to_addresses.iter().skip(1) {
             let cc: Mailbox = addr.parse().map_err(|e| format!("Invalid CC address: {}", e))?;
             email_builder = email_builder.cc(cc);
         }
-        
+
         let email = email_builder
             .multipart(
                 MultiPart::alternative()
@@ -277,41 +275,35 @@ impl WebhookSender {
                     .singlepart(SinglePart::html(body))
             )
             .map_err(|e| format!("Failed to build email: {}", e))?;
-        
-        // 提取域名用于 TLS 验证
-        let tls_domain = cfg.smtp_host.split(':').next().unwrap_or(&cfg.smtp_host);
-        let tls_params = TlsParameters::new(tls_domain.into())
-            .map_err(|e| format!("Failed to create TLS parameters: {}", e))?;
-        
-        let transport = if cfg.use_tls {
-            // SSL/TLS (port 465)
-            SmtpTransport::relay(&cfg.smtp_host)
-                .map_err(|e| format!("Failed to create SMTP relay: {}", e))?
-                .port(cfg.smtp_port)
-                .credentials((&cfg.username, &cfg.password).into())
-                .tls(SmtpTls::Wrapper(tls_params))
-                .timeout(Some(Duration::from_secs(10)))
-                .build()
+
+        // 使用 rustls (纯 Rust TLS，无需系统 openssl)
+        let tls = if cfg.use_tls {
+            // SSL/TLS (port 465) — Wrapper 模式: 先 TLS 握手，再 SMTP
+            let tls_params = TlsParameters::builder(cfg.smtp_host.clone())
+                .build_rustls()
+                .map_err(|e| format!("Failed to create TLS params: {}", e))?;
+            Tls::Wrapper(tls_params)
         } else {
-            // STARTTLS (port 587)
-            SmtpTransport::starttls_relay(&cfg.smtp_host)
-                .map_err(|e| format!("Failed to create STARTTLS relay: {}", e))?
-                .port(cfg.smtp_port)
-                .credentials((&cfg.username, &cfg.password).into())
-                .tls(SmtpTls::Required(tls_params))
-                .timeout(Some(Duration::from_secs(10)))
-                .build()
+            // STARTTLS (port 587) — Required 模式: SMTP 明文连接后升级 TLS
+            let tls_params = TlsParameters::builder(cfg.smtp_host.clone())
+                .build_rustls()
+                .map_err(|e| format!("Failed to create TLS params: {}", e))?;
+            Tls::Required(tls_params)
         };
+
+        let transport = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&cfg.smtp_host)
+            .port(cfg.smtp_port)
+            .credentials((&cfg.username, &cfg.password).into())
+            .tls(tls)
+            .timeout(Some(Duration::from_secs(10)))
+            .build();
         
-        // 使用 tokio 阻塞 SMTP 发送
-        let result = tokio::task::spawn_blocking(move || {
-            transport.send(&email)
-        })
-        .await
-        .map_err(|e| format!("Email task failed: {}", e))?
-        .map_err(|e| format!("Failed to send email: {}", e))?;
-        
-        let _ = result;
+        // 异步发送
+        transport
+            .send(email)
+            .await
+            .map_err(|e| format!("Failed to send email: {}", e))?;
+
         Ok(())
     }
     
