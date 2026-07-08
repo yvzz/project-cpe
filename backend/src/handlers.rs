@@ -2657,10 +2657,10 @@ pub async fn clear_call_history_handler(
 
 // ============ Webhook 配置 API ============
 
-/// GET /api/webhook/config - 获取 Webhook 配置
+/// GET /api/webhook/config - 获取通知渠道配置
 pub async fn get_webhook_config_handler(
     State(config_manager): State<Arc<ConfigManager>>,
-) -> (StatusCode, Json<ApiResponse<crate::config::WebhookConfig>>) {
+) -> (StatusCode, Json<ApiResponse<crate::config::NotificationChannel>>) {
     let config = config_manager.get_webhook();
     (
         StatusCode::OK,
@@ -2668,19 +2668,19 @@ pub async fn get_webhook_config_handler(
     )
 }
 
-/// POST /api/webhook/config - 设置 Webhook 配置
+/// POST /api/webhook/config - 设置通知渠道配置
 pub async fn set_webhook_config_handler(
     State(config_manager): State<Arc<ConfigManager>>,
-    Json(webhook_config): Json<crate::config::WebhookConfig>,
+    Json(webhook_config): Json<crate::config::NotificationChannel>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     match config_manager.set_webhook(webhook_config) {
         Ok(_) => (
             StatusCode::OK,
-            Json(ApiResponse::success_with_message("Webhook config updated", json!({}))),
+            Json(ApiResponse::success_with_message("Notification config updated", json!({}))),
         ),
         Err(e) => (
             StatusCode::OK,
-            Json(ApiResponse::error(format!("Failed to update webhook config: {}", e))),
+            Json(ApiResponse::error(format!("Failed to update notification config: {}", e))),
         ),
     }
 }

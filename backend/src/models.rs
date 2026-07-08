@@ -1164,3 +1164,12 @@ pub struct OtaApplyRequest {
     pub restart_now: bool,
 }
 
+// Re-export notification channel types from config for API serialization.
+// handlers.rs uses crate::config::NotificationChannel, but for completeness
+// we also expose them here so API response types can reference them.
+#[allow(unused_imports)]
+pub use crate::config::{
+    BarkConfig, ChannelType, DingtalkConfig, EmailConfig, FeishuConfig, NotificationChannel,
+    WecomConfig,
+};
+

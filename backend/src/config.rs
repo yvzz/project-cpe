@@ -13,60 +13,155 @@
 //! 使用 JSON 文件存储用户配置，支持热更新
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tracing::{info, warn};
 
-/// Webhook 配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebhookConfig {
-    pub enabled: bool,
+/// 通知渠道类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelType {
+    #[default]
+    None,
+    Dingtalk,
+    Feishu,
+    Wecom,
+    Email,
+    Bark,
+}
+
+/// 钉钉机器人配置
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DingtalkConfig {
     pub url: String,
+    pub secret: String,
+    #[serde(default)]
+    pub template: String,
+}
+
+/// 飞书机器人配置
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FeishuConfig {
+    pub url: String,
+    #[serde(default)]
+    pub secret: String,
+    #[serde(default)]
+    pub template: String,
+}
+
+/// 企业微信机器人配置
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WecomConfig {
+    pub url: String,
+    #[serde(default)]
+    pub secret: String,
+    #[serde(default)]
+    pub template: String,
+}
+
+/// 邮件配置
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EmailConfig {
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub use_tls: bool,
+    pub username: String,
+    pub password: String,
+    pub from_name: String,
+    pub to_addresses: String,
+    #[serde(default)]
+    pub subject_prefix: String,
+}
+
+/// Bark 推送配置
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BarkConfig {
+    pub server_url: String,
+    pub device_key: String,
+    #[serde(default)]
+    pub sound: String,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
+    pub group: String,
+}
+
+/// 通知渠道配置（互斥单选）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationChannel {
+    pub channel: ChannelType,
+    /// 各渠道配置字段，全部可选，激活哪个填哪个
+    #[serde(default)]
+    pub dingtalk: DingtalkConfig,
+    #[serde(default)]
+    pub feishu: FeishuConfig,
+    #[serde(default)]
+    pub wecom: WecomConfig,
+    #[serde(default)]
+    pub email: EmailConfig,
+    #[serde(default)]
+    pub bark: BarkConfig,
+    /// 全局开关
     pub forward_sms: bool,
     pub forward_calls: bool,
-    #[serde(default)]
-    pub headers: HashMap<String, String>,
-    #[serde(default)]
-    pub secret: String,  // 可选的签名密钥
-    #[serde(default = "default_sms_template")]
-    pub sms_template: String,  // 短信 payload 模板
-    #[serde(default = "default_call_template")]
-    pub call_template: String,  // 通话 payload 模板
 }
 
-/// 默认短信模板 (飞书机器人格式)
-fn default_sms_template() -> String {
-    r#"{
-  "msg_type": "text",
-  "content": {
-    "text": "📱 短信通知\n发送方: {{phone_number}}\n内容: {{content}}\n时间: {{timestamp}}"
-  }
-}"#.to_string()
-}
-
-/// 默认通话模板 (飞书机器人格式)
-fn default_call_template() -> String {
-    r#"{
-  "msg_type": "text",
-  "content": {
-    "text": "📞 来电通知\n号码: {{phone_number}}\n类型: {{direction}}\n时间: {{start_time}}\n时长: {{duration}}秒\n已接听: {{answered}}"
-  }
-}"#.to_string()
-}
-
-impl Default for WebhookConfig {
+impl Default for NotificationChannel {
     fn default() -> Self {
         Self {
-            enabled: false,
-            url: String::new(),
+            channel: ChannelType::None,
+            dingtalk: DingtalkConfig::default(),
+            feishu: FeishuConfig::default(),
+            wecom: WecomConfig::default(),
+            email: EmailConfig::default(),
+            bark: BarkConfig::default(),
             forward_sms: true,
             forward_calls: true,
-            headers: HashMap::new(),
-            secret: String::new(),
-            sms_template: default_sms_template(),
-            call_template: default_call_template(),
+        }
+    }
+}
+
+impl NotificationChannel {
+    /// 判断通知渠道是否启用
+    pub fn is_channel_enabled(&self) -> bool {
+        self.channel != ChannelType::None
+    }
+
+    /// 获取当前激活渠道的 URL
+    /// 返回 (ChannelType, &str)
+    pub fn get_active_url(&self) -> Option<(ChannelType, &str)> {
+        match self.channel {
+            ChannelType::None => None,
+            ChannelType::Dingtalk => {
+                if !self.dingtalk.url.is_empty() {
+                    Some((ChannelType::Dingtalk, &self.dingtalk.url))
+                } else {
+                    None
+                }
+            }
+            ChannelType::Feishu => {
+                if !self.feishu.url.is_empty() {
+                    Some((ChannelType::Feishu, &self.feishu.url))
+                } else {
+                    None
+                }
+            }
+            ChannelType::Wecom => {
+                if !self.wecom.url.is_empty() {
+                    Some((ChannelType::Wecom, &self.wecom.url))
+                } else {
+                    None
+                }
+            }
+            ChannelType::Email => None,
+            ChannelType::Bark => {
+                if !self.bark.device_key.is_empty() {
+                    Some((ChannelType::Bark, &self.bark.device_key))
+                } else {
+                    None
+                }
+            }
         }
     }
 }
@@ -75,8 +170,7 @@ impl Default for WebhookConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     #[serde(default)]
-    pub webhook: WebhookConfig,
-    // 未来可以添加更多配置项
+    pub webhook: NotificationChannel,
 }
 
 /// 配置管理器
@@ -128,13 +222,13 @@ impl ConfigManager {
         self.config.read().unwrap().clone()
     }
     
-    /// 获取 Webhook 配置
-    pub fn get_webhook(&self) -> WebhookConfig {
+    /// 获取 Webhook（通知渠道）配置
+    pub fn get_webhook(&self) -> NotificationChannel {
         self.config.read().unwrap().webhook.clone()
     }
     
-    /// 更新 Webhook 配置
-    pub fn set_webhook(&self, webhook: WebhookConfig) -> Result<(), String> {
+    /// 更新 Webhook（通知渠道）配置
+    pub fn set_webhook(&self, webhook: NotificationChannel) -> Result<(), String> {
         {
             let mut config = self.config.write().unwrap();
             config.webhook = webhook;
@@ -207,4 +301,3 @@ pub fn get_default_config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("config.json")
 }
-

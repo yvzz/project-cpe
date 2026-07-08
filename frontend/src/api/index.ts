@@ -65,7 +65,7 @@ import type {
   SetApnRequest,
   ConnectivityCheckResponse,
   CallHistoryResponse,
-  WebhookConfig,
+  NotificationChannel,
   WebhookTestResponse,
   OtaStatusResponse,
   OtaUploadResponse,
@@ -525,11 +525,11 @@ class UDX710API {
 
   // 获取 Webhook 配置
   async getWebhookConfig() {
-    return request<ApiResponse<WebhookConfig>>('/webhook/config')
+    return request<ApiResponse<NotificationChannel>>('/webhook/config')
   }
 
   // 设置 Webhook 配置
-  async setWebhookConfig(config: WebhookConfig) {
+  async setWebhookConfig(config: NotificationChannel) {
     return request<ApiResponse<Record<string, unknown>>>('/webhook/config', {
       method: 'POST',
       body: JSON.stringify(config),

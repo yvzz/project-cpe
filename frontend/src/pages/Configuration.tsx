@@ -32,7 +32,6 @@ import {
   CardHeader,
   LinearProgress,
   TextField,
-  IconButton,
 } from '@mui/material'
 import Grid from '@mui/material/Grid'
 import {
@@ -45,13 +44,215 @@ import {
   HealthAndSafety,
   FlightTakeoff,
   Webhook,
-  Add,
   PlayArrow,
+  Chat,
+  Email,
+  Smartphone,
+  Block,
 } from '@mui/icons-material'
 import { api } from '../api'
 import ErrorSnackbar from '../components/ErrorSnackbar'
-import type { UsbModeResponse, AirplaneModeResponse, WebhookConfig } from '../api/types'
-import { DEFAULT_SMS_TEMPLATE, DEFAULT_CALL_TEMPLATE } from '../api/types'
+import type { UsbModeResponse, AirplaneModeResponse, NotificationChannel, ChannelType, DingtalkConfig, FeishuConfig, WecomConfig, EmailConfig, BarkConfig } from '../api/types'
+import { DEFAULT_NOTIFICATION_CHANNEL } from '../api/types'
+
+// ========== 通知渠道辅助组件 ==========
+
+const CHANNEL_OPTIONS: { value: ChannelType; label: string; icon: React.ReactNode; desc: string }[] = [
+  {
+    value: 'none',
+    label: '不使用',
+    icon: <Block />,
+    desc: '关闭推送通知'
+  },
+  {
+    value: 'dingtalk',
+    label: '钉钉群机器人',
+    icon: <Chat />,
+    desc: '通过钉钉群机器人推送消息'
+  },
+  {
+    value: 'feishu',
+    label: '飞书群机器人',
+    icon: <Chat />,
+    desc: '通过飞书群机器人推送消息'
+  },
+  {
+    value: 'wecom',
+    label: '企业微信机器人',
+    icon: <Chat />,
+    desc: '通过企业微信群机器人推送消息'
+  },
+  {
+    value: 'email',
+    label: '邮件转发',
+    icon: <Email />,
+    desc: '通过SMTP邮件发送通知'
+  },
+  {
+    value: 'bark',
+    label: 'Bark (iOS推送)',
+    icon: <Smartphone />,
+    desc: '通过Bark推送到iOS设备'
+  },
+]
+
+function DingtalkForm({ config, onChange }: { config: DingtalkConfig, onChange: (c: DingtalkConfig) => void }) {
+  return (
+    <Box>
+      <Typography variant="body2" color="text.secondary" mb={2}>
+        在钉钉群中添加「自定义机器人」，复制 Webhook 地址和加签密钥到下方。
+      </Typography>
+      <TextField fullWidth label="Webhook URL" value={config.url}
+        onChange={e => onChange({ ...config, url: e.target.value })}
+        placeholder="https://oapi.dingtalk.com/robot/send?access_token=xxx"
+        sx={{ mb: 2 }} />
+      <TextField fullWidth label="加签密钥 (Secret)" value={config.secret}
+        onChange={e => onChange({ ...config, secret: e.target.value })}
+        type="password" placeholder="SEC..." helperText="钉钉机器人安全设置中的加签密钥"
+        sx={{ mb: 2 }} />
+      <TextField fullWidth label="自定义模板 (可选)" value={config.template}
+        onChange={e => onChange({ ...config, template: e.target.value })}
+        multiline rows={4} placeholder='默认：{"msgtype":"text","text":{"content":"📱 短信\n发送方: {{phone_number}}\n内容: {{content}}"}}'
+        InputProps={{ sx: { fontFamily: 'monospace', fontSize: '0.85rem' } }} />
+    </Box>
+  )
+}
+
+function FeishuForm({ config, onChange }: { config: FeishuConfig, onChange: (c: FeishuConfig) => void }) {
+  return (
+    <Box>
+      <Typography variant="body2" color="text.secondary" mb={2}>
+        在飞书群中添加「自定义机器人」，复制 Webhook 地址和签名密钥到下方。
+      </Typography>
+      <TextField fullWidth label="Webhook URL" value={config.url}
+        onChange={e => onChange({ ...config, url: e.target.value })}
+        placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+        sx={{ mb: 2 }} />
+      <TextField fullWidth label="签名密钥 (可选)" value={config.secret}
+        onChange={e => onChange({ ...config, secret: e.target.value })}
+        type="password" placeholder="留空则不签名"
+        helperText="飞书机器人安全设置中的签名密钥（可选）"
+        sx={{ mb: 2 }} />
+      <TextField fullWidth label="自定义模板 (可选)" value={config.template}
+        onChange={e => onChange({ ...config, template: e.target.value })}
+        multiline rows={4} placeholder='默认：{"msg_type":"text","content":{"text":"..."}}'
+        InputProps={{ sx: { fontFamily: 'monospace', fontSize: '0.85rem' } }} />
+    </Box>
+  )
+}
+
+function WecomForm({ config, onChange }: { config: WecomConfig, onChange: (c: WecomConfig) => void }) {
+  return (
+    <Box>
+      <Typography variant="body2" color="text.secondary" mb={2}>
+        在企业微信群中添加「群机器人」，复制 Webhook 地址和密钥到下方。
+      </Typography>
+      <TextField fullWidth label="Webhook URL" value={config.url}
+        onChange={e => onChange({ ...config, url: e.target.value })}
+        placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+        sx={{ mb: 2 }} />
+      <TextField fullWidth label="签名密钥 (可选)" value={config.secret}
+        onChange={e => onChange({ ...config, secret: e.target.value })}
+        type="password" placeholder="留空则不签名"
+        sx={{ mb: 2 }} />
+      <TextField fullWidth label="自定义模板 (可选)" value={config.template}
+        onChange={e => onChange({ ...config, template: e.target.value })}
+        multiline rows={4}
+        InputProps={{ sx: { fontFamily: 'monospace', fontSize: '0.85rem' } }} />
+    </Box>
+  )
+}
+
+function EmailForm({ config, onChange }: { config: EmailConfig, onChange: (c: EmailConfig) => void }) {
+  return (
+    <Box>
+      <Typography variant="body2" color="text.secondary" mb={2}>
+        配置 SMTP 服务器发送邮件通知。支持 QQ邮箱、163邮箱、Gmail 等主流邮箱。
+      </Typography>
+      <Grid container spacing={2}>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <TextField fullWidth label="SMTP 服务器" value={config.smtp_host}
+            onChange={e => onChange({ ...config, smtp_host: e.target.value })}
+            placeholder="smtp.qq.com" />
+        </Grid>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <TextField fullWidth label="SMTP 端口" value={config.smtp_port}
+            onChange={e => onChange({ ...config, smtp_port: Number(e.target.value) })}
+            type="number" placeholder="465" />
+        </Grid>
+      </Grid>
+      <FormControlLabel
+        control={<Switch checked={config.use_tls} onChange={e => onChange({ ...config, use_tls: e.target.checked })} />}
+        label="使用 SSL/TLS（推荐 465 端口）"
+        sx={{ my: 1 }}
+      />
+      {!config.use_tls && (
+        <Alert severity="info" sx={{ mb: 2 }}>使用 STARTTLS（587 端口），需服务器支持 TLS 连接</Alert>
+      )}
+      <Grid container spacing={2}>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <TextField fullWidth label="发件人邮箱" value={config.username}
+            onChange={e => onChange({ ...config, username: e.target.value })}
+            placeholder="your@email.com" />
+        </Grid>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <TextField fullWidth label="发件人显示名" value={config.from_name}
+            onChange={e => onChange({ ...config, from_name: e.target.value })}
+            placeholder="CPE通知" />
+        </Grid>
+      </Grid>
+      <TextField fullWidth label="授权码/密码" value={config.password}
+        onChange={e => onChange({ ...config, password: e.target.value })}
+        type="password" placeholder="SMTP授权码（非登录密码）" sx={{ mt: 2 }}
+        helperText="QQ邮箱：设置 → 账户 → POP3/IMAP/SMTP/Exchange/CardDAV/CalDAV服务 → 生成授权码" />
+      <TextField fullWidth label="收件人邮箱" value={config.to_addresses}
+        onChange={e => onChange({ ...config, to_addresses: e.target.value })}
+        placeholder="recipient@example.com（多个用逗号分隔）" sx={{ mt: 2 }}
+        helperText="支持多个收件人，用英文逗号分隔" />
+      <TextField fullWidth label="邮件主题前缀" value={config.subject_prefix}
+        onChange={e => onChange({ ...config, subject_prefix: e.target.value })}
+        placeholder="[CPE通知]" sx={{ mt: 2 }} />
+    </Box>
+  )
+}
+
+function BarkForm({ config, onChange }: { config: BarkConfig, onChange: (c: BarkConfig) => void }) {
+  return (
+    <Box>
+      <Typography variant="body2" color="text.secondary" mb={2}>
+        Bark 是一款 iOS 推送服务，需要先在 App Store 安装 Bark 并获取设备 Key。
+      </Typography>
+      <Alert severity="info" sx={{ mb: 2 }}>
+        <Typography variant="body2">
+          <strong>设置步骤：</strong><br/>
+          1. 在 iOS 设备上打开 Bark，复制显示的「Server URL」和「Device Key」<br/>
+          2. 下方填入对应内容即可使用
+        </Typography>
+      </Alert>
+      <TextField fullWidth label="Bark 服务器地址" value={config.server_url}
+        onChange={e => onChange({ ...config, server_url: e.target.value })}
+        placeholder="https://api.day.app" sx={{ mb: 2 }} />
+      <TextField fullWidth label="设备 Key / Token" value={config.device_key}
+        onChange={e => onChange({ ...config, device_key: e.target.value })}
+        placeholder="Device Key" sx={{ mb: 2 }} />
+      <Grid container spacing={2}>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <TextField fullWidth label="推送铃声 (可选)" value={config.sound}
+            onChange={e => onChange({ ...config, sound: e.target.value })}
+            placeholder="留空使用默认铃声" />
+        </Grid>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <TextField fullWidth label="分组名称 (可选)" value={config.group}
+            onChange={e => onChange({ ...config, group: e.target.value })}
+            placeholder="CPE" />
+        </Grid>
+      </Grid>
+      <TextField fullWidth label="图标 URL (可选)" value={config.icon}
+        onChange={e => onChange({ ...config, icon: e.target.value })}
+        placeholder="https://example.com/icon.png" sx={{ mt: 2 }} />
+    </Box>
+  )
+}
 
 interface HealthStatus {
   status: string
@@ -80,21 +281,10 @@ export default function ConfigurationPage() {
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null)
   const [healthLoading, setHealthLoading] = useState(false)
 
-  // Webhook 配置状态
-  const [webhookConfig, setWebhookConfig] = useState<WebhookConfig>({
-    enabled: false,
-    url: '',
-    forward_sms: true,
-    forward_calls: true,
-    headers: {},
-    secret: '',
-    sms_template: DEFAULT_SMS_TEMPLATE,
-    call_template: DEFAULT_CALL_TEMPLATE,
-  })
+  // 通知渠道配置状态
+  const [notificationChannel, setNotificationChannel] = useState<NotificationChannel>(DEFAULT_NOTIFICATION_CHANNEL)
   const [webhookLoading, setWebhookLoading] = useState(false)
   const [webhookTesting, setWebhookTesting] = useState(false)
-  const [newHeaderKey, setNewHeaderKey] = useState('')
-  const [newHeaderValue, setNewHeaderValue] = useState('')
 
   const loadData = async () => {
     setLoading(true)
@@ -114,7 +304,7 @@ export default function ConfigurationPage() {
         setSelectedUsbMode(usbRes.data.current_mode || 1)
       }
       if (airplaneModeRes.data) setAirplaneMode(airplaneModeRes.data)
-      if (webhookRes.data) setWebhookConfig(webhookRes.data)
+      if (webhookRes.data) setNotificationChannel(webhookRes.data)
 
       // 加载健康检查
       await checkHealth()
@@ -262,14 +452,14 @@ export default function ConfigurationPage() {
     }
   }
 
-  // Webhook 相关处理函数
-  const handleSaveWebhook = async () => {
+  // 通知渠道保存
+  const handleSaveNotification = async () => {
     setWebhookLoading(true)
     setError(null)
     try {
-      const response = await api.setWebhookConfig(webhookConfig)
+      const response = await api.setWebhookConfig(notificationChannel)
       if (response.status === 'ok') {
-        setSuccess('Webhook 配置已保存')
+        setSuccess('通知配置已保存')
       } else {
         setError(response.message)
       }
@@ -280,7 +470,7 @@ export default function ConfigurationPage() {
     }
   }
 
-  const handleTestWebhook = async () => {
+  const handleTestNotification = async () => {
     setWebhookTesting(true)
     setError(null)
     try {
@@ -299,29 +489,6 @@ export default function ConfigurationPage() {
     } finally {
       setWebhookTesting(false)
     }
-  }
-
-  const handleAddHeader = () => {
-    if (newHeaderKey.trim() && newHeaderValue.trim()) {
-      setWebhookConfig({
-        ...webhookConfig,
-        headers: {
-          ...webhookConfig.headers,
-          [newHeaderKey.trim()]: newHeaderValue.trim(),
-        },
-      })
-      setNewHeaderKey('')
-      setNewHeaderValue('')
-    }
-  }
-
-  const handleRemoveHeader = (key: string) => {
-    const newHeaders = { ...webhookConfig.headers }
-    delete newHeaders[key]
-    setWebhookConfig({
-      ...webhookConfig,
-      headers: newHeaders,
-    })
   }
 
   if (loading) {
@@ -750,19 +917,19 @@ export default function ConfigurationPage() {
           </AccordionDetails>
         </Accordion>
 
-        {/* Webhook 配置 */}
+        {/* ========== 通知渠道配置 ========== */}
         <Accordion
           expanded={expanded === 'webhook'}
           onChange={handleAccordionChange('webhook')}
         >
           <AccordionSummary expandIcon={<ExpandMore />}>
             <Box display="flex" alignItems="center" gap={1} width="100%">
-              <Webhook color={webhookConfig.enabled ? 'success' : 'primary'} />
-              <Typography fontWeight={600}>Webhook 转发</Typography>
+              <Webhook color={notificationChannel.channel !== 'none' ? 'success' : 'primary'} />
+              <Typography fontWeight={600}>通知渠道</Typography>
               <Box flexGrow={1} />
               <Chip
-                label={webhookConfig.enabled ? '已启用' : '已禁用'}
-                color={webhookConfig.enabled ? 'success' : 'default'}
+                label={CHANNEL_OPTIONS.find(o => o.value === notificationChannel.channel)?.label ?? '未配置'}
+                color={notificationChannel.channel !== 'none' ? 'success' : 'default'}
                 size="small"
                 onClick={(e: MouseEvent) => e.stopPropagation()}
               />
@@ -770,195 +937,140 @@ export default function ConfigurationPage() {
           </AccordionSummary>
           <AccordionDetails>
             <Typography variant="body2" color="text.secondary" paragraph>
-              启用后，来电和短信将自动转发到指定的 Webhook URL。适用于消息推送、自动化处理等场景。
+              选择一种通知渠道来推送短信和来电事件。同一时间只能启用一个渠道。
             </Typography>
-            
+
             <Divider sx={{ my: 2 }} />
-            
-            {/* 启用开关 */}
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={webhookConfig.enabled}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => setWebhookConfig({ ...webhookConfig, enabled: e.target.checked })}
-                  color="success"
-                />
-              }
-              label={
-                <Box>
-                  <Typography variant="body1" fontWeight={600}>
-                    {webhookConfig.enabled ? '转发已启用' : '转发已禁用'}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    启用后来电和短信将自动转发
-                  </Typography>
-                </Box>
-              }
-              sx={{ mb: 2 }}
-            />
 
-            {/* Webhook URL */}
-            <TextField
-              fullWidth
-              label="Webhook URL"
-              value={webhookConfig.url}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setWebhookConfig({ ...webhookConfig, url: e.target.value })}
-              placeholder="https://example.com/webhook"
-              sx={{ mb: 2 }}
-              disabled={!webhookConfig.enabled}
-            />
-
-            {/* 转发选项 */}
-            <Box display="flex" gap={2} mb={2}>
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={webhookConfig.forward_sms}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => setWebhookConfig({ ...webhookConfig, forward_sms: e.target.checked })}
-                    disabled={!webhookConfig.enabled}
-                  />
-                }
-                label="转发短信"
-              />
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={webhookConfig.forward_calls}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => setWebhookConfig({ ...webhookConfig, forward_calls: e.target.checked })}
-                    disabled={!webhookConfig.enabled}
-                  />
-                }
-                label="转发来电"
-              />
-            </Box>
-
-            {/* Secret */}
-            <TextField
-              fullWidth
-              label="签名密钥 (可选)"
-              value={webhookConfig.secret}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setWebhookConfig({ ...webhookConfig, secret: e.target.value })}
-              placeholder="用于验证 Webhook 请求的密钥"
-              type="password"
-              sx={{ mb: 2 }}
-              disabled={!webhookConfig.enabled}
-              helperText="设置后将在请求头添加 X-Webhook-Signature"
-            />
-
-            {/* 自定义请求头 */}
-            <Typography variant="subtitle2" gutterBottom>自定义请求头</Typography>
-            <Box display="flex" gap={1} mb={1}>
-              <TextField
-                size="small"
-                label="Header Key"
-                value={newHeaderKey}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setNewHeaderKey(e.target.value)}
-                disabled={!webhookConfig.enabled}
-                sx={{ flex: 1 }}
-              />
-              <TextField
-                size="small"
-                label="Header Value"
-                value={newHeaderValue}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setNewHeaderValue(e.target.value)}
-                disabled={!webhookConfig.enabled}
-                sx={{ flex: 1 }}
-              />
-              <IconButton
-                color="primary"
-                onClick={handleAddHeader}
-                disabled={!webhookConfig.enabled || !newHeaderKey.trim() || !newHeaderValue.trim()}
+            {/* 渠道选择 */}
+            <FormControl component="fieldset" fullWidth>
+              <FormLabel component="legend">通知渠道</FormLabel>
+              <RadioGroup
+                value={notificationChannel.channel}
+                onChange={(e) => setNotificationChannel(prev => ({
+                  ...prev,
+                  channel: e.target.value as ChannelType
+                }))}
               >
-                <Add />
-              </IconButton>
-            </Box>
-            {Object.keys(webhookConfig.headers).length > 0 && (
-              <Box mb={2}>
-                {Object.entries(webhookConfig.headers).map(([key, value]) => (
-                  <Chip
-                    key={key}
-                    label={`${key}: ${value}`}
-                    onDelete={() => handleRemoveHeader(key)}
-                    size="small"
-                    sx={{ mr: 1, mb: 1 }}
-                    disabled={!webhookConfig.enabled}
-                  />
-                ))}
-              </Box>
+                <Grid container spacing={1}>
+                  {CHANNEL_OPTIONS.map(opt => (
+                    <Grid size={{ xs: 12, sm: 6, md: 4 }} key={opt.value}>
+                      <Box
+                        onClick={() => setNotificationChannel(prev => ({
+                          ...prev,
+                          channel: opt.value
+                        }))}
+                        sx={{
+                          p: 1.5,
+                          border: '1px solid',
+                          borderColor: notificationChannel.channel === opt.value ? 'primary.main' : 'divider',
+                          borderRadius: 2,
+                          cursor: 'pointer',
+                          bgcolor: notificationChannel.channel === opt.value ? 'primary.light' : 'background.paper',
+                          '&:hover': { borderColor: 'primary.main' },
+                          transition: 'all 0.2s',
+                        }}
+                      >
+                        <Box display="flex" alignItems="center" gap={1}>
+                          <Radio value={opt.value} sx={{ p: 0 }} />
+                          <Box>
+                            <Typography variant="body2" fontWeight={600}>{opt.label}</Typography>
+                            <Typography variant="caption" color="text.secondary">{opt.desc}</Typography>
+                          </Box>
+                        </Box>
+                      </Box>
+                    </Grid>
+                  ))}
+                </Grid>
+              </RadioGroup>
+            </FormControl>
+
+            <Divider sx={{ my: 2 }} />
+
+            {/* 动态渲染各渠道配置表单 */}
+            {notificationChannel.channel === 'dingtalk' && (
+              <DingtalkForm
+                config={notificationChannel.dingtalk}
+                onChange={c => setNotificationChannel(prev => ({ ...prev, dingtalk: c }))}
+              />
+            )}
+            {notificationChannel.channel === 'feishu' && (
+              <FeishuForm
+                config={notificationChannel.feishu}
+                onChange={c => setNotificationChannel(prev => ({ ...prev, feishu: c }))}
+              />
+            )}
+            {notificationChannel.channel === 'wecom' && (
+              <WecomForm
+                config={notificationChannel.wecom}
+                onChange={c => setNotificationChannel(prev => ({ ...prev, wecom: c }))}
+              />
+            )}
+            {notificationChannel.channel === 'email' && (
+              <EmailForm
+                config={notificationChannel.email}
+                onChange={c => setNotificationChannel(prev => ({ ...prev, email: c }))}
+              />
+            )}
+            {notificationChannel.channel === 'bark' && (
+              <BarkForm
+                config={notificationChannel.bark}
+                onChange={c => setNotificationChannel(prev => ({ ...prev, bark: c }))}
+              />
+            )}
+            {notificationChannel.channel === 'none' && (
+              <Alert severity="info">已关闭通知渠道，不推送任何消息。</Alert>
             )}
 
             <Divider sx={{ my: 2 }} />
 
-            {/* Payload 模板配置 */}
-            <Typography variant="subtitle2" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              📝 Payload 模板
-              <Chip label="JSON" size="small" variant="outlined" />
-            </Typography>
-            
-            <Alert severity="info" sx={{ mb: 2 }}>
-              <Typography variant="body2">
-                <strong>支持的模板变量：</strong><br/>
-                短信: <code>{'{{phone_number}}'}</code>, <code>{'{{content}}'}</code>, <code>{'{{timestamp}}'}</code>, <code>{'{{direction}}'}</code>, <code>{'{{status}}'}</code><br/>
-                通话: <code>{'{{phone_number}}'}</code>, <code>{'{{duration}}'}</code>, <code>{'{{start_time}}'}</code>, <code>{'{{end_time}}'}</code>, <code>{'{{answered}}'}</code>, <code>{'{{direction}}'}</code>
-              </Typography>
-            </Alert>
+            {/* 转发选项（仅在非 none 时显示） */}
+            {notificationChannel.channel !== 'none' && (
+              <Box display="flex" gap={3} mb={2}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={notificationChannel.forward_sms}
+                      onChange={(e) => setNotificationChannel(prev => ({
+                        ...prev,
+                        forward_sms: e.target.checked
+                      }))}
+                    />
+                  }
+                  label="转发短信"
+                />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={notificationChannel.forward_calls}
+                      onChange={(e) => setNotificationChannel(prev => ({
+                        ...prev,
+                        forward_calls: e.target.checked
+                      }))}
+                    />
+                  }
+                  label="转发来电"
+                />
+              </Box>
+            )}
 
-            {/* 短信模板 */}
-            <TextField
-              fullWidth
-              label="短信通知模板"
-              value={webhookConfig.sms_template}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setWebhookConfig({ ...webhookConfig, sms_template: e.target.value })}
-              multiline
-              rows={6}
-              sx={{ mb: 2, fontFamily: 'monospace' }}
-              disabled={!webhookConfig.enabled}
-              placeholder={DEFAULT_SMS_TEMPLATE}
-              InputProps={{
-                sx: { fontFamily: 'monospace', fontSize: '0.85rem' }
-              }}
-            />
-
-            {/* 通话模板 */}
-            <TextField
-              fullWidth
-              label="通话通知模板"
-              value={webhookConfig.call_template}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setWebhookConfig({ ...webhookConfig, call_template: e.target.value })}
-              multiline
-              rows={6}
-              sx={{ mb: 2 }}
-              disabled={!webhookConfig.enabled}
-              placeholder={DEFAULT_CALL_TEMPLATE}
-              InputProps={{
-                sx: { fontFamily: 'monospace', fontSize: '0.85rem' }
-              }}
-            />
-
-            {/* 重置模板按钮 */}
-            <Box display="flex" gap={1} mb={2}>
-              <Button
-                size="small"
-                variant="outlined"
-                onClick={() => setWebhookConfig({ 
-                  ...webhookConfig, 
-                  sms_template: DEFAULT_SMS_TEMPLATE,
-                  call_template: DEFAULT_CALL_TEMPLATE 
-                })}
-                disabled={!webhookConfig.enabled}
-              >
-                重置为默认模板 (飞书)
-              </Button>
-            </Box>
-
-            <Divider sx={{ my: 2 }} />
+            {/* 模板变量提示 */}
+            {notificationChannel.channel !== 'none' && notificationChannel.channel !== 'email' && notificationChannel.channel !== 'bark' && (
+              <Alert severity="info" sx={{ mb: 2 }}>
+                <Typography variant="body2">
+                  <strong>支持的模板变量：</strong><br/>
+                  短信: <code>{'{{phone_number}}'}</code>, <code>{'{{content}}'}</code>, <code>{'{{timestamp}}'}</code>, <code>{'{{direction}}'}</code><br/>
+                  通话: <code>{'{{phone_number}}'}</code>, <code>{'{{direction_cn}}'}</code>, <code>{'{{duration}}'}</code>, <code>{'{{start_time}}'}</code>, <code>{'{{answered}}'}</code>
+                </Typography>
+              </Alert>
+            )}
 
             {/* 操作按钮 */}
             <Box display="flex" gap={2}>
               <Button
                 variant="contained"
                 fullWidth
-                onClick={() => void handleSaveWebhook()}
+                onClick={() => void handleSaveNotification()}
                 disabled={webhookLoading}
                 startIcon={webhookLoading ? <CircularProgress size={20} /> : undefined}
               >
@@ -966,20 +1078,13 @@ export default function ConfigurationPage() {
               </Button>
               <Button
                 variant="outlined"
-                onClick={() => void handleTestWebhook()}
-                disabled={webhookTesting || !webhookConfig.enabled || !webhookConfig.url}
+                onClick={() => void handleTestNotification()}
+                disabled={webhookTesting || notificationChannel.channel === 'none'}
                 startIcon={webhookTesting ? <CircularProgress size={20} /> : <PlayArrow />}
               >
                 {webhookTesting ? '测试中...' : '测试'}
               </Button>
             </Box>
-
-            <Alert severity="success" sx={{ mt: 2 }}>
-              <Typography variant="body2">
-                <strong>💡 提示</strong><br/>
-                点击"测试"按钮会使用短信模板发送一条模拟消息到 Webhook URL，可用于验证配置是否正确。
-              </Typography>
-            </Alert>
           </AccordionDetails>
         </Accordion>
       </Box>

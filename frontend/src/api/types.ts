@@ -660,6 +660,91 @@ export interface WebhookTestResponse {
   message: string
 }
 
+// ============ 通知渠道类型 ============
+
+export type ChannelType = 'none' | 'dingtalk' | 'feishu' | 'wecom' | 'email' | 'bark'
+
+// 钉钉机器人配置
+export interface DingtalkConfig {
+  url: string
+  secret: string
+  template: string
+}
+
+// 飞书机器人配置
+export interface FeishuConfig {
+  url: string
+  secret: string
+  template: string
+}
+
+// 企业微信机器人配置
+export interface WecomConfig {
+  url: string
+  secret: string
+  template: string
+}
+
+// 邮件配置
+export interface EmailConfig {
+  smtp_host: string
+  smtp_port: number
+  use_tls: boolean
+  username: string
+  password: string
+  from_name: string
+  to_addresses: string
+  subject_prefix: string
+}
+
+// Bark配置
+export interface BarkConfig {
+  server_url: string
+  device_key: string
+  sound: string
+  icon: string
+  group: string
+}
+
+// 通知渠道统一结构
+export interface NotificationChannel {
+  channel: ChannelType
+  dingtalk: DingtalkConfig
+  feishu: FeishuConfig
+  wecom: WecomConfig
+  email: EmailConfig
+  bark: BarkConfig
+  forward_sms: boolean
+  forward_calls: boolean
+}
+
+// 默认空配置
+export const DEFAULT_NOTIFICATION_CHANNEL: NotificationChannel = {
+  channel: 'none',
+  dingtalk: { url: '', secret: '', template: '' },
+  feishu: { url: '', secret: '', template: '' },
+  wecom: { url: '', secret: '', template: '' },
+  email: {
+    smtp_host: '',
+    smtp_port: 465,
+    use_tls: true,
+    username: '',
+    password: '',
+    from_name: 'CPE通知',
+    to_addresses: '',
+    subject_prefix: '[CPE通知]',
+  },
+  bark: {
+    server_url: 'https://api.day.app',
+    device_key: '',
+    sound: '',
+    icon: '',
+    group: 'CPE',
+  },
+  forward_sms: true,
+  forward_calls: true,
+}
+
 // ========== OTA 更新类型 ==========
 
 // OTA 元数据
