@@ -265,31 +265,46 @@ jobs:
           retention-days: 90
           if-no-files-found: error
       
-      # ==================== 创建 Release (可选) ====================
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/v')
+      # ==================== 更新 latest Release ====================
+      - name: Update latest Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: latest
+          name: "Latest Build (${{ steps.version.outputs.version }})"
           files: release/udx710-ota-${{ steps.version.outputs.version }}.tar.gz
           body: |
             ## OTA 更新包
-            
+
             **版本**: ${{ steps.version.outputs.version }}
             **Commit**: ${{ github.sha }}
             **构建时间**: ${{ github.event.repository.updated_at }}
-            
-            ### 安装说明
-            
+            **触发方式**: ${{ github.event_name }}
+
+            ### Web 页面一键升级
+
+            1. 打开 http://192.168.66.1:3000 → OTA 更新
+            2. 下载下方 `udx710-ota-${{ steps.version.outputs.version }}.tar.gz`
+            3. 上传到设备的 OTA 页面 → 应用并重启
+
+            ### 命令行升级
+
             ```bash
-            # 上传 OTA 包到设备
+            # 下载
+            wget https://github.com/${{ github.repository }}/releases/download/latest/udx710-ota-${{ steps.version.outputs.version }}.tar.gz
+
+            # 上传
             curl -X POST http://192.168.66.1:3000/api/ota/upload \
               -F "file=@udx710-ota-${{ steps.version.outputs.version }}.tar.gz"
-            
-            # 开始 OTA 更新
-            curl -X POST http://192.168.66.1:3000/api/ota/update
+
+            # 应用
+            curl -X POST http://192.168.66.1:3000/api/ota/apply \
+              -H "Content-Type: application/json" \
+              -d '{"restart_now": true}'
             ```
           draft: false
-          prerelease: false
+          prerelease: true
+          fail_on_unmatched_files: true
+          append_body: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
