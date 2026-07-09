@@ -19,26 +19,27 @@ use base64::Engine;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use reqwest::Client;
+use sha2::Sha256;
 use std::fmt::Write as FmtWrite;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
-type HmacSha256 = Hmac<sha2::Sha256>;
+type HmacSha256 = Hmac<Sha256>;
 
 // ---------------------------------------------------------------------------
 // 默认模板（各渠道内置 fallback）
 // ---------------------------------------------------------------------------
 
-const DEFAULT_DINGTALK_TEMPLATE: &str = r#"{"msgtype":"text","text":{"content":"📱 短信\n发送方: {{phone_number}}\n内容: {{content}}\n时间: {{timestamp}}"}}"#;
+const DEFAULT_DINGTALK_TEMPLATE: &str = r#"{"msgtype":"text","text":{"content":"📱 短信\n发送方: {{phone_number}}\n接收方: {{self_number}}\n内容: {{content}}\n时间: {{local_time}}"}}"#;
 
-const DEFAULT_FEISHU_TEMPLATE: &str = r#"{"msg_type":"text","content":{"text":"📱 短信\n发送方: {{phone_number}}\n内容: {{content}}\n时间: {{timestamp}}"}}"#;
+const DEFAULT_FEISHU_TEMPLATE: &str = r#"{"msg_type":"text","content":{"text":"📱 短信\n发送方: {{phone_number}}\n接收方: {{self_number}}\n内容: {{content}}\n时间: {{local_time}}"}}"#;
 
-const DEFAULT_WECOM_TEMPLATE: &str = r#"{"msgtype":"text","content":{"content":"📱 短信\n发送方: {{phone_number}}\n内容: {{content}}\n时间: {{timestamp}}"}}"#;
+const DEFAULT_WECOM_TEMPLATE: &str = r#"{"msgtype":"text","content":{"content":"📱 短信\n发送方: {{phone_number}}\n接收方: {{self_number}}\n内容: {{content}}\n时间: {{local_time}}"}}"#;
 
-const DEFAULT_DINGTALK_CALL_TEMPLATE: &str = r#"{"msgtype":"text","text":{"content":"📞 来电\n号码: {{phone_number}}\n类型: {{direction_cn}}\n时间: {{start_time}}\n时长: {{duration}}秒\n已接听: {{answered}}"}}"#;
+const DEFAULT_DINGTALK_CALL_TEMPLATE: &str = r#"{"msgtype":"text","text":{"content":"📞 来电\n号码: {{phone_number}}\n时间: {{local_time}}\n时长: {{duration}}秒"}}"#;
 
-const DEFAULT_FEISHU_CALL_TEMPLATE: &str = r#"{"msg_type":"text","content":{"text":"📞 来电\n号码: {{phone_number}}\n类型: {{direction_cn}}\n时间: {{start_time}}\n时长: {{duration}}秒\n已接听: {{answered}}"}}"#;
+const DEFAULT_FEISHU_CALL_TEMPLATE: &str = r#"{"msg_type":"text","content":{"text":"📞 来电\n号码: {{phone_number}}\n时间: {{local_time}}\n时长: {{duration}}秒"}}"#;
 
-const DEFAULT_WECOM_CALL_TEMPLATE: &str = r#"{"msgtype":"text","content":{"content":"📞 来电\n号码: {{phone_number}}\n类型: {{direction_cn}}\n时间: {{start_time}}\n时长: {{duration}}秒\n已接听: {{answered}}"}}"#;
+const DEFAULT_WECOM_CALL_TEMPLATE: &str = r#"{"msgtype":"text","content":{"content":"📞 来电\n号码: {{phone_number}}\n时间: {{local_time}}\n时长: {{duration}}秒"}}"#;
 
 // ---------------------------------------------------------------------------
 // WebhookSender
@@ -48,6 +49,8 @@ const DEFAULT_WECOM_CALL_TEMPLATE: &str = r#"{"msgtype":"text","content":{"conte
 pub struct WebhookSender {
     client: Client,
     config_manager: Arc<crate::config::ConfigManager>,
+    /// 缓存的本机号码（从 ofono 获取）
+    self_number: RwLock<String>,
 }
 
 impl WebhookSender {
@@ -59,7 +62,19 @@ impl WebhookSender {
                 .build()
                 .expect("Failed to create HTTP client"),
             config_manager,
+            self_number: RwLock::new(String::new()),
         }
+    }
+
+    /// 设置本机号码（启动时从 ofono 获取后调用）
+    pub fn set_self_number(&self, number: &str) {
+        let mut s = self.self_number.write().unwrap();
+        *s = number.to_string();
+    }
+
+    /// 获取本机号码
+    fn get_self_number(&self) -> String {
+        self.self_number.read().unwrap().clone()
     }
     
     /// 获取当前通知渠道配置
@@ -75,7 +90,8 @@ impl WebhookSender {
             return Ok(());
         }
         
-        let payload = render_sms_for_channel(&config, message);
+        let self_number = self.get_self_number();
+        let payload = render_sms_for_channel(&config, message, &self_number);
         self.send_by_channel(config.channel, &config, &payload).await
     }
     
@@ -87,7 +103,8 @@ impl WebhookSender {
             return Ok(());
         }
         
-        let payload = render_call_for_channel(&config, call);
+        let self_number = self.get_self_number();
+        let payload = render_call_for_channel(&config, call, &self_number);
         self.send_by_channel(config.channel, &config, &payload).await
     }
     
@@ -127,7 +144,8 @@ impl WebhookSender {
             pdu: None,
         };
         
-        let payload = render_sms_for_channel(&config, &test_message);
+        let self_number = self.get_self_number();
+        let payload = render_sms_for_channel(&config, &test_message, &self_number);
         self.send_by_channel(config.channel, &config, &payload).await?;
         
         Ok(format!("Test message sent via {:?} successfully", config.channel))
@@ -144,7 +162,6 @@ impl WebhookSender {
             return Err("Dingtalk URL is not configured".to_string());
         }
         
-        // 追加签名参数
         let final_url = if !cfg.secret.is_empty() {
             build_robot_signed_url(&cfg.url, &cfg.secret)
         } else {
@@ -163,7 +180,6 @@ impl WebhookSender {
     }
     
     /// 发送飞书机器人消息
-    /// 签名算法: timestamp\nsecret → HMAC-SHA256 → Base64 → X-Feishu-Signature header
     async fn send_feishu(&self, cfg: &FeishuConfig, payload: &str) -> Result<(), String> {
         if cfg.url.is_empty() {
             return Err("Feishu URL is not configured".to_string());
@@ -174,22 +190,18 @@ impl WebhookSender {
             .header("Content-Type", "application/json")
             .body(payload.to_string());
         
-        // 如果配置了密钥，添加飞书签名头
         if !cfg.secret.is_empty() {
             let signature = compute_feishu_signature(&cfg.secret);
             request = request.header("X-Feishu-Signature", signature);
         }
         
-        let response = request
-            .send()
-            .await
+        let response = request.send().await
             .map_err(|e| format!("Failed to send Feishu message: {}", e))?;
         
         check_response(response).await
     }
     
     /// 发送企业微信机器人消息
-    /// 签名算法同钉钉: timestamp\nsecret → HMAC-SHA256 → Base64 → URL参数 sign=
     async fn send_wecom(&self, cfg: &WecomConfig, payload: &str) -> Result<(), String> {
         if cfg.url.is_empty() {
             return Err("Wecom URL is not configured".to_string());
@@ -213,7 +225,6 @@ impl WebhookSender {
     }
     
     /// 发送邮件
-    #[allow(clippy::unused_async)]
     async fn send_email(&self, cfg: &EmailConfig, payload: &str) -> Result<(), String> {
         use lettre::message::{Mailbox, MessageBuilder, MultiPart, SinglePart};
         use lettre::transport::smtp::client::{Tls, TlsParameters};
@@ -224,13 +235,11 @@ impl WebhookSender {
             return Err("Email config is incomplete".to_string());
         }
 
-        // 解析收件人
         let to_addresses: Vec<&str> = cfg.to_addresses.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
         if to_addresses.is_empty() {
             return Err("No valid recipient email address".to_string());
         }
 
-        // 从 payload 解析 subject 和 body（payload 格式: "SUBJECT\n\nBODY"）
         let (subject, body) = if let Some(pos) = payload.find("\n\n") {
             (payload[..pos].to_string(), payload[pos + 2..].to_string())
         } else {
@@ -243,7 +252,6 @@ impl WebhookSender {
             format!("{} {}", cfg.subject_prefix.trim(), subject)
         };
 
-        // 构建发件人 Mailbox
         let from_str = if cfg.from_name.is_empty() {
             cfg.username.clone()
         } else {
@@ -252,17 +260,14 @@ impl WebhookSender {
         let from: Mailbox = from_str.parse()
             .map_err(|e| format!("Invalid from address: {}", e))?;
 
-        // 解析第一个收件人
         let first_to: Mailbox = to_addresses[0].parse()
             .map_err(|e| format!("Invalid to address: {}", e))?;
 
-        // 构建邮件
         let mut email_builder = MessageBuilder::new()
             .to(first_to)
             .subject(&subject)
             .from(from);
 
-        // 添加抄送收件人
         for addr in to_addresses.iter().skip(1) {
             let cc: Mailbox = addr.parse().map_err(|e| format!("Invalid CC address: {}", e))?;
             email_builder = email_builder.cc(cc);
@@ -276,15 +281,12 @@ impl WebhookSender {
             )
             .map_err(|e| format!("Failed to build email: {}", e))?;
 
-        // 使用 rustls (纯 Rust TLS，无需系统 openssl)
         let tls = if cfg.use_tls {
-            // SSL/TLS (port 465) — Wrapper 模式: 先 TLS 握手，再 SMTP
             let tls_params = TlsParameters::builder(cfg.smtp_host.clone())
                 .build_rustls()
                 .map_err(|e| format!("Failed to create TLS params: {}", e))?;
             Tls::Wrapper(tls_params)
         } else {
-            // STARTTLS (port 587) — Required 模式: SMTP 明文连接后升级 TLS
             let tls_params = TlsParameters::builder(cfg.smtp_host.clone())
                 .build_rustls()
                 .map_err(|e| format!("Failed to create TLS params: {}", e))?;
@@ -298,10 +300,7 @@ impl WebhookSender {
             .timeout(Some(Duration::from_secs(10)))
             .build();
         
-        // 异步发送
-        transport
-            .send(email)
-            .await
+        transport.send(email).await
             .map_err(|e| format!("Failed to send email: {}", e))?;
 
         Ok(())
@@ -319,30 +318,21 @@ impl WebhookSender {
             &cfg.server_url
         };
         
-        // payload 格式: "TITLE\n\nBODY"
         let (title, body) = if let Some(pos) = payload.find("\n\n") {
             (payload[..pos].to_string(), payload[pos + 2..].to_string())
         } else {
             ("CPE 通知".to_string(), payload.to_string())
         };
         
-        // 构建 Bark API URL
         let url = format!("{}/{}", server_url.trim_end_matches('/'), cfg.device_key);
         
         let mut query_params = vec![
             ("title", title.as_str()),
             ("body", body.as_str()),
         ];
-        
-        if !cfg.sound.is_empty() {
-            query_params.push(("sound", &cfg.sound));
-        }
-        if !cfg.icon.is_empty() {
-            query_params.push(("icon", &cfg.icon));
-        }
-        if !cfg.group.is_empty() {
-            query_params.push(("group", &cfg.group));
-        }
+        if !cfg.sound.is_empty() { query_params.push(("sound", &cfg.sound)); }
+        if !cfg.icon.is_empty() { query_params.push(("icon", &cfg.icon)); }
+        if !cfg.group.is_empty() { query_params.push(("group", &cfg.group)); }
         
         let response = self.client
             .post(&url)
@@ -360,47 +350,44 @@ impl WebhookSender {
 // 模板渲染
 // ---------------------------------------------------------------------------
 
+/// 将 UTC 时间字符串转换为北京时间 `yyyy-MM-dd HH:mm:ss`
+fn utc_to_local(utc_str: &str) -> String {
+    // 尝试解析 RFC3339 格式
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(utc_str) {
+        let beijing = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        return dt.with_timezone(&beijing).format("%Y-%m-%d %H:%M:%S").to_string();
+    }
+    // 回退：直接返回原值
+    utc_str.to_string()
+}
+
 /// 根据渠道渲染短信内容
-fn render_sms_for_channel(config: &NotificationChannel, sms: &SmsMessage) -> String {
+fn render_sms_for_channel(config: &NotificationChannel, sms: &SmsMessage, self_number: &str) -> String {
+    let local_time = utc_to_local(&sms.timestamp);
     match config.channel {
         ChannelType::Dingtalk => {
-            let tpl = if config.dingtalk.template.is_empty() {
-                DEFAULT_DINGTALK_TEMPLATE
-            } else {
-                &config.dingtalk.template
-            };
-            render_template(tpl, sms, None)
+            let tpl = if config.dingtalk.template.is_empty() { DEFAULT_DINGTALK_TEMPLATE } else { &config.dingtalk.template };
+            render_template(tpl, sms, None, self_number, &local_time)
         }
         ChannelType::Feishu => {
-            let tpl = if config.feishu.template.is_empty() {
-                DEFAULT_FEISHU_TEMPLATE
-            } else {
-                &config.feishu.template
-            };
-            render_template(tpl, sms, None)
+            let tpl = if config.feishu.template.is_empty() { DEFAULT_FEISHU_TEMPLATE } else { &config.feishu.template };
+            render_template(tpl, sms, None, self_number, &local_time)
         }
         ChannelType::Wecom => {
-            let tpl = if config.wecom.template.is_empty() {
-                DEFAULT_WECOM_TEMPLATE
-            } else {
-                &config.wecom.template
-            };
-            render_template(tpl, sms, None)
+            let tpl = if config.wecom.template.is_empty() { DEFAULT_WECOM_TEMPLATE } else { &config.wecom.template };
+            render_template(tpl, sms, None, self_number, &local_time)
         }
         ChannelType::Email => {
-            // 邮件格式: "SUBJECT\n\nBODY"
             let body = format!(
-                "发送方: {}\n内容: {}\n时间: {}",
-                sms.phone_number,
-                sms.content,
-                sms.timestamp
+                "发送方: {}\n接收方: {}\n内容: {}\n时间: {}",
+                sms.phone_number, self_number, sms.content, local_time
             );
             format!("[CPE短信] {}\n\n{}", sms.phone_number, body)
         }
         ChannelType::Bark => {
             let body = format!(
-                "发送方: {}\n内容: {}\n时间: {}",
-                sms.phone_number, sms.content, sms.timestamp
+                "发送方: {}\n接收方: {}\n内容: {}\n时间: {}",
+                sms.phone_number, self_number, sms.content, local_time
             );
             format!("📱 短信通知\n\n{}", body)
         }
@@ -409,59 +396,39 @@ fn render_sms_for_channel(config: &NotificationChannel, sms: &SmsMessage) -> Str
 }
 
 /// 根据渠道渲染通话内容
-fn render_call_for_channel(config: &NotificationChannel, call: &CallRecord) -> String {
-    let direction_cn = if call.direction == "incoming" { "来电" } else { "去电" };
-    let answered_str = if call.answered { "是" } else { "否" };
+fn render_call_for_channel(config: &NotificationChannel, call: &CallRecord, self_number: &str) -> String {
+    let local_time = utc_to_local(&call.start_time);
+    
+    // 构建一个空 SMS 用于复用 render_template 的通话变量替换
+    let dummy_sms = SmsMessage {
+        id: 0, direction: String::new(), phone_number: String::new(),
+        content: String::new(), timestamp: String::new(), status: String::new(), pdu: None,
+    };
     
     match config.channel {
         ChannelType::Dingtalk => {
-            let tpl = if config.dingtalk.template.is_empty() {
-                DEFAULT_DINGTALK_CALL_TEMPLATE
-            } else {
-                &config.dingtalk.template
-            };
-            render_template(tpl, &crate::db::SmsMessage {
-                id: 0, direction: String::new(), phone_number: String::new(),
-                content: String::new(), timestamp: String::new(), status: String::new(), pdu: None,
-            }, Some(call))
+            let tpl = if config.dingtalk.template.is_empty() { DEFAULT_DINGTALK_CALL_TEMPLATE } else { &config.dingtalk.template };
+            render_template(tpl, &dummy_sms, Some(call), self_number, &local_time)
         }
         ChannelType::Feishu => {
-            let tpl = if config.feishu.template.is_empty() {
-                DEFAULT_FEISHU_CALL_TEMPLATE
-            } else {
-                &config.feishu.template
-            };
-            render_template(tpl, &crate::db::SmsMessage {
-                id: 0, direction: String::new(), phone_number: String::new(),
-                content: String::new(), timestamp: String::new(), status: String::new(), pdu: None,
-            }, Some(call))
+            let tpl = if config.feishu.template.is_empty() { DEFAULT_FEISHU_CALL_TEMPLATE } else { &config.feishu.template };
+            render_template(tpl, &dummy_sms, Some(call), self_number, &local_time)
         }
         ChannelType::Wecom => {
-            let tpl = if config.wecom.template.is_empty() {
-                DEFAULT_WECOM_CALL_TEMPLATE
-            } else {
-                &config.wecom.template
-            };
-            render_template(tpl, &crate::db::SmsMessage {
-                id: 0, direction: String::new(), phone_number: String::new(),
-                content: String::new(), timestamp: String::new(), status: String::new(), pdu: None,
-            }, Some(call))
+            let tpl = if config.wecom.template.is_empty() { DEFAULT_WECOM_CALL_TEMPLATE } else { &config.wecom.template };
+            render_template(tpl, &dummy_sms, Some(call), self_number, &local_time)
         }
         ChannelType::Email => {
             let body = format!(
-                "号码: {}\n类型: {}\n时间: {}\n时长: {}秒\n已接听: {}",
-                call.phone_number,
-                direction_cn,
-                call.start_time,
-                call.duration,
-                answered_str
+                "号码: {}\n时间: {}\n时长: {}秒",
+                call.phone_number, local_time, call.duration
             );
             format!("[CPE来电] {}\n\n{}", call.phone_number, body)
         }
         ChannelType::Bark => {
             let body = format!(
-                "号码: {}\n类型: {}\n时间: {}\n时长: {}秒\n已接听: {}",
-                call.phone_number, direction_cn, call.start_time, call.duration, answered_str
+                "号码: {}\n时间: {}\n时长: {}秒",
+                call.phone_number, local_time, call.duration
             );
             format!("📞 来电通知\n\n{}", body)
         }
@@ -470,7 +437,7 @@ fn render_call_for_channel(config: &NotificationChannel, call: &CallRecord) -> S
 }
 
 /// 通用模板替换，支持 {{变量名}} 格式
-fn render_template(template: &str, sms: &SmsMessage, call: Option<&CallRecord>) -> String {
+fn render_template(template: &str, sms: &SmsMessage, call: Option<&CallRecord>, self_number: &str, local_time: &str) -> String {
     let direction_cn = if sms.direction == "incoming" {
         "来电"
     } else if sms.direction == "outgoing" {
@@ -493,6 +460,9 @@ fn render_template(template: &str, sms: &SmsMessage, call: Option<&CallRecord>) 
     result = result.replace("{{sender}}", &sms.phone_number);
     result = result.replace("{{message}}", &escape_json_string(&sms.content));
     result = result.replace("{{time}}", &sms.timestamp);
+    // 本机号码 + 本地时间
+    result = result.replace("{{self_number}}", self_number);
+    result = result.replace("{{local_time}}", local_time);
     
     // 通话变量
     if let Some(c) = call {
@@ -507,9 +477,10 @@ fn render_template(template: &str, sms: &SmsMessage, call: Option<&CallRecord>) 
         result = result.replace("{{answered}}", ans);
         result = result.replace("{{answered_bool}}", &c.answered.to_string());
         result = result.replace("{{id}}", &c.id.to_string());
-        // 别名
         result = result.replace("{{caller}}", &c.phone_number);
         result = result.replace("{{time}}", &c.start_time);
+        result = result.replace("{{self_number}}", self_number);
+        result = result.replace("{{local_time}}", local_time);
     }
     
     result
@@ -528,63 +499,40 @@ fn escape_json_string(s: &str) -> String {
 // 签名计算
 // ---------------------------------------------------------------------------
 
-/// 计算钉钉/企微机器人签名
-/// 算法: timestamp\nsecret → HMAC-SHA256 → Base64
 fn compute_robot_sign(secret: &str) -> (i64, String) {
     use base64::engine::general_purpose::STANDARD;
-    
     let timestamp = chrono::Utc::now().timestamp_millis();
     let string_to_sign = format!("{}\n{}", timestamp, secret);
-    
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC can take key of any size");
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
     mac.update(string_to_sign.as_bytes());
-    let result = mac.finalize().into_bytes();
-    
-    let sign = STANDARD.encode(&result);
+    let sign = STANDARD.encode(&mac.finalize().into_bytes());
     (timestamp, sign)
 }
 
-/// 为钉钉/企微机器人 URL 追加签名参数
 fn build_robot_signed_url(url: &str, secret: &str) -> String {
     let (timestamp, sign) = compute_robot_sign(secret);
     let separator = if url.contains('?') { "&" } else { "?" };
-    let encoded_sign = url_encode(&sign);
-    format!("{}{}timestamp={}&sign={}", url, separator, timestamp, encoded_sign)
+    format!("{}{}timestamp={}&sign={}", url, separator, timestamp, url_encode(&sign))
 }
 
-/// 计算飞书签名
-/// 算法: timestamp\nsecret → HMAC-SHA256 → Base64 → X-Feishu-Signature header
 fn compute_feishu_signature(secret: &str) -> String {
     use base64::engine::general_purpose::STANDARD;
-    
     let timestamp = chrono::Utc::now().timestamp_millis();
     let string_to_sign = format!("{}\n{}", timestamp, secret);
-    
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC can take key of any size");
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
     mac.update(string_to_sign.as_bytes());
-    let result = mac.finalize().into_bytes();
-    
-    STANDARD.encode(&result)
+    STANDARD.encode(&mac.finalize().into_bytes())
 }
 
-/// URL 编码
 fn url_encode(s: &str) -> String {
     let mut encoded = String::with_capacity(s.len() * 3);
     for ch in s.chars() {
         match ch {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => {
-                encoded.push(ch);
-            }
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => encoded.push(ch),
             '+' => encoded.push_str("%2B"),
             '/' => encoded.push_str("%2F"),
             '=' => encoded.push_str("%3D"),
-            _ => {
-                for byte in ch.to_string().as_bytes() {
-                    write!(&mut encoded, "%{:02X}", byte).unwrap();
-                }
-            }
+            _ => { write!(&mut encoded, "%{:02X}", ch as u8).unwrap(); }
         }
     }
     encoded
@@ -594,7 +542,6 @@ fn url_encode(s: &str) -> String {
 // 响应检查
 // ---------------------------------------------------------------------------
 
-/// 检查 HTTP 响应
 async fn check_response(response: reqwest::Response) -> Result<(), String> {
     let status = response.status();
     if status.is_success() {

@@ -51,7 +51,7 @@ mod utils;
 mod webhook;
 
 use config::{ConfigManager, get_default_config_path};
-use dbus::init_data_connection;
+use dbus::{init_data_connection, get_sim_info_data};
 use handlers::*;
 use db::Database;
 use state::AppState;
@@ -174,6 +174,23 @@ async fn main() -> Result<()> {
     
     // 初始化 Webhook 发送器
     let webhook_sender = Arc::new(WebhookSender::new(Arc::clone(&config_manager)));
+
+    // 从 ofono 获取本机号码并缓存
+    {
+        let sender_clone = Arc::clone(&webhook_sender);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await; // 等待 modem 初始化
+            match crate::dbus::get_sim_info_data(&Connection::system().await.unwrap()).await {
+                Ok(info) if !info.phone_numbers.is_empty() => {
+                    let num = &info.phone_numbers[0];
+                    info!("本机号码: {}", num);
+                    sender_clone.set_self_number(num);
+                }
+                Ok(_) => warn!("未能获取本机号码 (SIM 卡未就绪?)"),
+                Err(e) => warn!("获取本机号码失败: {}", e),
+            }
+        });
+    }
     
     // 启动 SMS 监听线程
     {
