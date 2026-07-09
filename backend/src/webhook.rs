@@ -438,34 +438,14 @@ fn render_call_for_channel(config: &NotificationChannel, call: &CallRecord, self
 
 /// 通用模板替换，支持 {{变量名}} 格式
 fn render_template(template: &str, sms: &SmsMessage, call: Option<&CallRecord>, self_number: &str, local_time: &str) -> String {
-    let direction_cn = if sms.direction == "incoming" {
-        "来电"
-    } else if sms.direction == "outgoing" {
-        "去电"
-    } else {
-        &sms.direction
-    };
-    
     let mut result = template.to_string();
-    
-    // 短信变量
-    result = result.replace("{{phone_number}}", &sms.phone_number);
-    result = result.replace("{{content}}", &escape_json_string(&sms.content));
-    result = result.replace("{{timestamp}}", &sms.timestamp);
-    result = result.replace("{{direction}}", &sms.direction);
-    result = result.replace("{{direction_cn}}", direction_cn);
-    result = result.replace("{{status}}", &sms.status);
-    result = result.replace("{{id}}", &sms.id.to_string());
-    // 别名
-    result = result.replace("{{sender}}", &sms.phone_number);
-    result = result.replace("{{message}}", &escape_json_string(&sms.content));
-    result = result.replace("{{time}}", &sms.timestamp);
-    // 本机号码 + 本地时间
+
+    // 本机号码 + 本地时间（短信和通话都用）
     result = result.replace("{{self_number}}", self_number);
     result = result.replace("{{local_time}}", local_time);
-    
-    // 通话变量
+
     if let Some(c) = call {
+        // ========== 通话模板 ==========
         result = result.replace("{{phone_number}}", &c.phone_number);
         result = result.replace("{{direction}}", &c.direction);
         let dc = if c.direction == "incoming" { "来电" } else { "去电" };
@@ -479,10 +459,21 @@ fn render_template(template: &str, sms: &SmsMessage, call: Option<&CallRecord>, 
         result = result.replace("{{id}}", &c.id.to_string());
         result = result.replace("{{caller}}", &c.phone_number);
         result = result.replace("{{time}}", &c.start_time);
-        result = result.replace("{{self_number}}", self_number);
-        result = result.replace("{{local_time}}", local_time);
+    } else {
+        // ========== 短信模板 ==========
+        result = result.replace("{{phone_number}}", &sms.phone_number);
+        result = result.replace("{{content}}", &escape_json_string(&sms.content));
+        result = result.replace("{{timestamp}}", &sms.timestamp);
+        result = result.replace("{{direction}}", &sms.direction);
+        let direction_cn = if sms.direction == "incoming" { "来电" } else if sms.direction == "outgoing" { "去电" } else { &sms.direction };
+        result = result.replace("{{direction_cn}}", direction_cn);
+        result = result.replace("{{status}}", &sms.status);
+        result = result.replace("{{id}}", &sms.id.to_string());
+        result = result.replace("{{sender}}", &sms.phone_number);
+        result = result.replace("{{message}}", &escape_json_string(&sms.content));
+        result = result.replace("{{time}}", &sms.timestamp);
     }
-    
+
     result
 }
 
