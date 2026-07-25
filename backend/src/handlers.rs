@@ -2786,3 +2786,118 @@ pub async fn cancel_ota_handler() -> impl IntoResponse {
     }
 }
 
+// ============ 设备名称 ============
+
+/// GET /api/system/device-name - 获取设备名称
+pub async fn get_device_name_handler(
+    State(config_manager): State<Arc<ConfigManager>>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    let name = config_manager.get_device_name();
+    (
+        StatusCode::OK,
+        Json(ApiResponse::success_with_message(
+            "Success",
+            json!({"device_name": name}),
+        )),
+    )
+}
+
+/// POST /api/system/device-name - 设置设备名称
+pub async fn set_device_name_handler(
+    State(config_manager): State<Arc<ConfigManager>>,
+    Json(payload): Json<crate::models::SetDeviceNameRequest>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    match config_manager.set_device_name(&payload.device_name) {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(ApiResponse::success_with_message(
+                "Device name updated",
+                json!({"device_name": payload.device_name}),
+            )),
+        ),
+        Err(e) => (
+            StatusCode::OK,
+            Json(ApiResponse::error(format!("Failed to update device name: {}", e))),
+        ),
+    }
+}
+
+// ============ 定时重启 ============
+
+/// GET /api/system/scheduled-reboot - 获取定时重启配置
+pub async fn get_scheduled_reboot_handler(
+    State(config_manager): State<Arc<ConfigManager>>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    let cfg = config_manager.get_scheduled_reboot();
+    (
+        StatusCode::OK,
+        Json(ApiResponse::success_with_message(
+            "Success",
+            serde_json::to_value(&crate::models::ScheduledRebootConfig {
+                enabled: cfg.enabled,
+                interval_days: cfg.interval_days,
+                hour: cfg.hour,
+                minute: cfg.minute,
+            })
+            .unwrap_or(json!({})),
+        )),
+    )
+}
+
+/// POST /api/system/scheduled-reboot - 设置定时重启配置
+pub async fn set_scheduled_reboot_handler(
+    State(config_manager): State<Arc<ConfigManager>>,
+    State(reboot_manager): State<Arc<crate::scheduled_reboot::ScheduledRebootManager>>,
+    Json(payload): Json<crate::models::ScheduledRebootConfig>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    // 参数校验
+    if payload.hour > 23 {
+        return (
+            StatusCode::OK,
+            Json(ApiResponse::error("hour must be 0-23")),
+        );
+    }
+    if payload.minute > 59 {
+        return (
+            StatusCode::OK,
+            Json(ApiResponse::error("minute must be 0-59")),
+        );
+    }
+    if payload.interval_days < 1 {
+        return (
+            StatusCode::OK,
+            Json(ApiResponse::error("interval_days must be >= 1")),
+        );
+    }
+
+    let config = crate::config::ScheduledRebootConfig {
+        enabled: payload.enabled,
+        interval_days: payload.interval_days,
+        hour: payload.hour,
+        minute: payload.minute,
+    };
+
+    match config_manager.set_scheduled_reboot(config) {
+        Ok(_) => {
+            // 唤醒调度器，让新配置立即生效
+            reboot_manager.wake();
+            (
+                StatusCode::OK,
+                Json(ApiResponse::success_with_message(
+                    "Scheduled reboot config updated",
+                    json!({
+                        "enabled": payload.enabled,
+                        "interval_days": payload.interval_days,
+                        "hour": payload.hour,
+                        "minute": payload.minute,
+                    }),
+                )),
+            )
+        }
+        Err(e) => (
+            StatusCode::OK,
+            Json(ApiResponse::error(format!("Failed to update config: {}", e))),
+        ),
+    }
+}
+

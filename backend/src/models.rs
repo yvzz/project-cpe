@@ -1093,6 +1093,21 @@ pub struct WebhookTestResponse {
     pub message: String,
 }
 
+/// 设置设备名称请求
+#[derive(Debug, Deserialize)]
+pub struct SetDeviceNameRequest {
+    pub device_name: String,
+}
+
+/// 定时重启配置请求（API 层，与 config.rs 中的 ScheduledRebootConfig 对应）
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ScheduledRebootConfig {
+    pub enabled: bool,
+    pub interval_days: u32,
+    pub hour: u8,
+    pub minute: u8,
+}
+
 // ============ OTA 更新模型 ============
 
 /// OTA 更新包元数据（meta.json 格式）

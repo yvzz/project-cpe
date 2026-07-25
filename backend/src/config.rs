@@ -122,6 +122,36 @@ impl Default for NotificationChannel {
     }
 }
 
+/// 定时重启配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledRebootConfig {
+    /// 是否启用定时重启
+    #[serde(default)]
+    pub enabled: bool,
+    /// 重启间隔天数（1=每天，2=每2天，以此类推）
+    #[serde(default = "default_interval_days")]
+    pub interval_days: u32,
+    /// 重启时间 - 小时（0-23）
+    #[serde(default)]
+    pub hour: u8,
+    /// 重启时间 - 分钟（0-59）
+    #[serde(default)]
+    pub minute: u8,
+}
+
+fn default_interval_days() -> u32 { 1 }
+
+impl Default for ScheduledRebootConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_days: 1,
+            hour: 4,
+            minute: 0,
+        }
+    }
+}
+
 impl NotificationChannel {
     /// 判断通知渠道是否启用
     pub fn is_channel_enabled(&self) -> bool {
@@ -171,6 +201,12 @@ impl NotificationChannel {
 pub struct AppConfig {
     #[serde(default)]
     pub webhook: NotificationChannel,
+    /// 设备自定义名称（用于推送消息标识，如"客厅CPE"）
+    #[serde(default)]
+    pub device_name: String,
+    /// 定时重启配置
+    #[serde(default)]
+    pub scheduled_reboot: ScheduledRebootConfig,
 }
 
 /// 配置管理器
@@ -232,6 +268,34 @@ impl ConfigManager {
         {
             let mut config = self.config.write().unwrap();
             config.webhook = webhook;
+        }
+        self.save()
+    }
+    
+    /// 获取设备名称
+    pub fn get_device_name(&self) -> String {
+        self.config.read().unwrap().device_name.clone()
+    }
+    
+    /// 设置设备名称
+    pub fn set_device_name(&self, name: &str) -> Result<(), String> {
+        {
+            let mut config = self.config.write().unwrap();
+            config.device_name = name.to_string();
+        }
+        self.save()
+    }
+    
+    /// 获取定时重启配置
+    pub fn get_scheduled_reboot(&self) -> ScheduledRebootConfig {
+        self.config.read().unwrap().scheduled_reboot.clone()
+    }
+    
+    /// 设置定时重启配置
+    pub fn set_scheduled_reboot(&self, cfg: ScheduledRebootConfig) -> Result<(), String> {
+        {
+            let mut config = self.config.write().unwrap();
+            config.scheduled_reboot = cfg;
         }
         self.save()
     }

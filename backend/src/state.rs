@@ -18,6 +18,7 @@ use zbus::Connection;
 
 use crate::config::ConfigManager;
 use crate::db::Database;
+use crate::scheduled_reboot::ScheduledRebootManager;
 use crate::webhook::WebhookSender;
 
 /// 应用全局状态
@@ -33,6 +34,8 @@ pub struct AppState {
     pub config_manager: Arc<ConfigManager>,
     /// Webhook 发送器（用于转发 SMS 和通话通知）
     pub webhook_sender: Arc<WebhookSender>,
+    /// 定时重启调度器
+    pub scheduled_reboot_manager: Arc<ScheduledRebootManager>,
 }
 
 impl AppState {
@@ -42,12 +45,14 @@ impl AppState {
         database: Arc<Database>,
         config_manager: Arc<ConfigManager>,
         webhook_sender: Arc<WebhookSender>,
+        scheduled_reboot_manager: Arc<ScheduledRebootManager>,
     ) -> Self {
         Self {
             dbus_conn,
             database,
             config_manager,
             webhook_sender,
+            scheduled_reboot_manager,
         }
     }
 }
@@ -76,6 +81,12 @@ impl FromRef<AppState> for Arc<ConfigManager> {
 impl FromRef<AppState> for Arc<WebhookSender> {
     fn from_ref(state: &AppState) -> Self {
         state.webhook_sender.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<ScheduledRebootManager> {
+    fn from_ref(state: &AppState) -> Self {
+        state.scheduled_reboot_manager.clone()
     }
 }
 

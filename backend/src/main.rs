@@ -43,6 +43,7 @@ mod handlers;
 mod iptables;
 mod models;
 mod ota;
+mod scheduled_reboot;
 mod serial;
 mod sms_listener;
 mod state;
@@ -51,11 +52,12 @@ mod utils;
 mod webhook;
 
 use config::{ConfigManager, get_default_config_path};
-use dbus::{init_data_connection, get_sim_info_data};
+use dbus::init_data_connection;
 use handlers::*;
 use db::Database;
 use state::AppState;
 use webhook::WebhookSender;
+use scheduled_reboot::ScheduledRebootManager;
 
 /// 获取二进制文件同级目录下的 www 目录路径
 fn get_www_dir() -> PathBuf {
@@ -175,6 +177,9 @@ async fn main() -> Result<()> {
     // 初始化 Webhook 发送器
     let webhook_sender = Arc::new(WebhookSender::new(Arc::clone(&config_manager)));
 
+    // 初始化定时重启管理器
+    let scheduled_reboot_manager = Arc::new(ScheduledRebootManager::new(Arc::clone(&config_manager)));
+
     // 从 ofono 获取本机号码并缓存
     {
         let sender_clone = Arc::clone(&webhook_sender);
@@ -246,6 +251,7 @@ async fn main() -> Result<()> {
         app_db,
         config_manager,
         webhook_sender,
+        scheduled_reboot_manager,
     );
 
     // Build routes - 使用统一的 AppState
@@ -313,6 +319,8 @@ async fn main() -> Result<()> {
         .route("/api/stats/cpu", get(get_cpu_info).options(options_handler))
         .route("/api/connectivity", get(get_connectivity_check).options(options_handler))
         .route("/api/system/reboot", post(system_reboot).options(options_handler))
+        .route("/api/system/device-name", get(get_device_name_handler).post(set_device_name_handler).options(options_handler))
+        .route("/api/system/scheduled-reboot", get(get_scheduled_reboot_handler).post(set_scheduled_reboot_handler).options(options_handler))
         .route("/api/health", get(health_check))
         // ========== Webhook 配置接口 ==========
         .route("/api/webhook/config", get(get_webhook_config_handler).post(set_webhook_config_handler).options(options_handler))

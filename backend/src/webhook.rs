@@ -2,9 +2,9 @@
  * @Author: 1orz cloudorzi@gmail.com
  * @Date: 2025-12-09 17:34:01
  * @LastEditors: 1orz cloudorzi@gmail.com
- * @LastEditTime: 2025-12-13 12:46:25
+ * @LastEditTime: 2026-07-26 00:49:00
  * @FilePath: /udx710-backend/backend/src/webhook.rs
- * @Description: 
+ * @Description: Webhook 转发模块
  * 
  * Copyright (c) 2025 by 1orz, All Rights Reserved. 
  */
@@ -29,17 +29,17 @@ type HmacSha256 = Hmac<Sha256>;
 // 默认模板（各渠道内置 fallback）
 // ---------------------------------------------------------------------------
 
-const DEFAULT_DINGTALK_TEMPLATE: &str = r#"{"msgtype":"text","text":{"content":"📱 短信\n发送方: {{phone_number}}\n接收方: {{self_number}}\n内容: {{content}}\n时间: {{local_time}}"}}"#;
+const DEFAULT_DINGTALK_TEMPLATE: &str = r#"{"msgtype":"text","text":{"content":"📱 短信\n设备: {{device_name}}\n发送方: {{phone_number}}\n内容: {{content}}\n时间: {{local_time}}"}}"#;
 
-const DEFAULT_FEISHU_TEMPLATE: &str = r#"{"msg_type":"text","content":{"text":"📱 短信\n发送方: {{phone_number}}\n接收方: {{self_number}}\n内容: {{content}}\n时间: {{local_time}}"}}"#;
+const DEFAULT_FEISHU_TEMPLATE: &str = r#"{"msg_type":"text","content":{"text":"📱 短信\n设备: {{device_name}}\n发送方: {{phone_number}}\n内容: {{content}}\n时间: {{local_time}}"}}"#;
 
-const DEFAULT_WECOM_TEMPLATE: &str = r#"{"msgtype":"text","content":{"content":"📱 短信\n发送方: {{phone_number}}\n接收方: {{self_number}}\n内容: {{content}}\n时间: {{local_time}}"}}"#;
+const DEFAULT_WECOM_TEMPLATE: &str = r#"{"msgtype":"text","content":{"content":"📱 短信\n设备: {{device_name}}\n发送方: {{phone_number}}\n内容: {{content}}\n时间: {{local_time}}"}}"#;
 
-const DEFAULT_DINGTALK_CALL_TEMPLATE: &str = r#"{"msgtype":"text","text":{"content":"📞 来电\n号码: {{phone_number}}\n时间: {{local_time}}\n时长: {{duration}}秒"}}"#;
+const DEFAULT_DINGTALK_CALL_TEMPLATE: &str = r#"{"msgtype":"text","text":{"content":"📞 来电\n设备: {{device_name}}\n号码: {{phone_number}}\n时间: {{local_time}}\n时长: {{duration}}秒"}}"#;
 
-const DEFAULT_FEISHU_CALL_TEMPLATE: &str = r#"{"msg_type":"text","content":{"text":"📞 来电\n号码: {{phone_number}}\n时间: {{local_time}}\n时长: {{duration}}秒"}}"#;
+const DEFAULT_FEISHU_CALL_TEMPLATE: &str = r#"{"msg_type":"text","content":{"text":"📞 来电\n设备: {{device_name}}\n号码: {{phone_number}}\n时间: {{local_time}}\n时长: {{duration}}秒"}}"#;
 
-const DEFAULT_WECOM_CALL_TEMPLATE: &str = r#"{"msgtype":"text","content":{"content":"📞 来电\n号码: {{phone_number}}\n时间: {{local_time}}\n时长: {{duration}}秒"}}"#;
+const DEFAULT_WECOM_CALL_TEMPLATE: &str = r#"{"msgtype":"text","content":{"content":"📞 来电\n设备: {{device_name}}\n号码: {{phone_number}}\n时间: {{local_time}}\n时长: {{duration}}秒"}}"#;
 
 // ---------------------------------------------------------------------------
 // WebhookSender
@@ -72,9 +72,17 @@ impl WebhookSender {
         *s = number.to_string();
     }
 
-    /// 获取本机号码
-    fn get_self_number(&self) -> String {
-        self.self_number.read().unwrap().clone()
+    /// 获取设备标识（优先级：自定义 device_name > SIM 本机号码 > "未知设备"）
+    fn get_device_label(&self) -> String {
+        let device_name = self.config_manager.get_device_name();
+        if !device_name.is_empty() {
+            return device_name;
+        }
+        let number = self.self_number.read().unwrap().clone();
+        if !number.is_empty() {
+            return number;
+        }
+        "未知设备".to_string()
     }
     
     /// 获取当前通知渠道配置
@@ -90,8 +98,8 @@ impl WebhookSender {
             return Ok(());
         }
         
-        let self_number = self.get_self_number();
-        let payload = render_sms_for_channel(&config, message, &self_number);
+        let device_label = self.get_device_label();
+        let payload = render_sms_for_channel(&config, message, &device_label);
         self.send_by_channel(config.channel, &config, &payload).await
     }
     
@@ -103,8 +111,8 @@ impl WebhookSender {
             return Ok(());
         }
         
-        let self_number = self.get_self_number();
-        let payload = render_call_for_channel(&config, call, &self_number);
+        let device_label = self.get_device_label();
+        let payload = render_call_for_channel(&config, call, &device_label);
         self.send_by_channel(config.channel, &config, &payload).await
     }
     
@@ -144,8 +152,8 @@ impl WebhookSender {
             pdu: None,
         };
         
-        let self_number = self.get_self_number();
-        let payload = render_sms_for_channel(&config, &test_message, &self_number);
+        let device_label = self.get_device_label();
+        let payload = render_sms_for_channel(&config, &test_message, &device_label);
         self.send_by_channel(config.channel, &config, &payload).await?;
         
         Ok(format!("Test message sent via {:?} successfully", config.channel))
@@ -362,32 +370,32 @@ fn utc_to_local(utc_str: &str) -> String {
 }
 
 /// 根据渠道渲染短信内容
-fn render_sms_for_channel(config: &NotificationChannel, sms: &SmsMessage, self_number: &str) -> String {
+fn render_sms_for_channel(config: &NotificationChannel, sms: &SmsMessage, device_label: &str) -> String {
     let local_time = utc_to_local(&sms.timestamp);
     match config.channel {
         ChannelType::Dingtalk => {
             let tpl = if config.dingtalk.template.is_empty() { DEFAULT_DINGTALK_TEMPLATE } else { &config.dingtalk.template };
-            render_template(tpl, sms, None, self_number, &local_time)
+            render_template(tpl, sms, None, device_label, &local_time)
         }
         ChannelType::Feishu => {
             let tpl = if config.feishu.template.is_empty() { DEFAULT_FEISHU_TEMPLATE } else { &config.feishu.template };
-            render_template(tpl, sms, None, self_number, &local_time)
+            render_template(tpl, sms, None, device_label, &local_time)
         }
         ChannelType::Wecom => {
             let tpl = if config.wecom.template.is_empty() { DEFAULT_WECOM_TEMPLATE } else { &config.wecom.template };
-            render_template(tpl, sms, None, self_number, &local_time)
+            render_template(tpl, sms, None, device_label, &local_time)
         }
         ChannelType::Email => {
             let body = format!(
-                "发送方: {}\n接收方: {}\n内容: {}\n时间: {}",
-                sms.phone_number, self_number, sms.content, local_time
+                "设备: {}\n发送方: {}\n内容: {}\n时间: {}",
+                device_label, sms.phone_number, sms.content, local_time
             );
             format!("[CPE短信] {}\n\n{}", sms.phone_number, body)
         }
         ChannelType::Bark => {
             let body = format!(
-                "发送方: {}\n接收方: {}\n内容: {}\n时间: {}",
-                sms.phone_number, self_number, sms.content, local_time
+                "设备: {}\n发送方: {}\n内容: {}\n时间: {}",
+                device_label, sms.phone_number, sms.content, local_time
             );
             format!("📱 短信通知\n\n{}", body)
         }
@@ -396,7 +404,7 @@ fn render_sms_for_channel(config: &NotificationChannel, sms: &SmsMessage, self_n
 }
 
 /// 根据渠道渲染通话内容
-fn render_call_for_channel(config: &NotificationChannel, call: &CallRecord, self_number: &str) -> String {
+fn render_call_for_channel(config: &NotificationChannel, call: &CallRecord, device_label: &str) -> String {
     let local_time = utc_to_local(&call.start_time);
     
     // 构建一个空 SMS 用于复用 render_template 的通话变量替换
@@ -408,20 +416,20 @@ fn render_call_for_channel(config: &NotificationChannel, call: &CallRecord, self
     match config.channel {
         ChannelType::Dingtalk => {
             let tpl = if config.dingtalk.template.is_empty() { DEFAULT_DINGTALK_CALL_TEMPLATE } else { &config.dingtalk.template };
-            render_template(tpl, &dummy_sms, Some(call), self_number, &local_time)
+            render_template(tpl, &dummy_sms, Some(call), device_label, &local_time)
         }
         ChannelType::Feishu => {
             let tpl = if config.feishu.template.is_empty() { DEFAULT_FEISHU_CALL_TEMPLATE } else { &config.feishu.template };
-            render_template(tpl, &dummy_sms, Some(call), self_number, &local_time)
+            render_template(tpl, &dummy_sms, Some(call), device_label, &local_time)
         }
         ChannelType::Wecom => {
             let tpl = if config.wecom.template.is_empty() { DEFAULT_WECOM_CALL_TEMPLATE } else { &config.wecom.template };
-            render_template(tpl, &dummy_sms, Some(call), self_number, &local_time)
+            render_template(tpl, &dummy_sms, Some(call), device_label, &local_time)
         }
         ChannelType::Email => {
             let body = format!(
-                "号码: {}\n时间: {}\n时长: {}秒",
-                call.phone_number, local_time, call.duration
+                "设备: {}\n号码: {}\n时间: {}\n时长: {}秒",
+                device_label, call.phone_number, local_time, call.duration
             );
             format!("[CPE来电] {}\n\n{}", call.phone_number, body)
         }
@@ -437,11 +445,12 @@ fn render_call_for_channel(config: &NotificationChannel, call: &CallRecord, self
 }
 
 /// 通用模板替换，支持 {{变量名}} 格式
-fn render_template(template: &str, sms: &SmsMessage, call: Option<&CallRecord>, self_number: &str, local_time: &str) -> String {
+fn render_template(template: &str, sms: &SmsMessage, call: Option<&CallRecord>, device_label: &str, local_time: &str) -> String {
     let mut result = template.to_string();
 
-    // 本机号码 + 本地时间（短信和通话都用）
-    result = result.replace("{{self_number}}", self_number);
+    // 设备标识（新变量 device_name + 兼容旧的 self_number）
+    result = result.replace("{{device_name}}", device_label);
+    result = result.replace("{{self_number}}", device_label);
     result = result.replace("{{local_time}}", local_time);
 
     if let Some(c) = call {
