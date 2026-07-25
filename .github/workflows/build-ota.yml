@@ -302,7 +302,7 @@ jobs:
               -d '{"restart_now": true}'
             ```
           draft: false
-          prerelease: true
+          prerelease: false
           fail_on_unmatched_files: true
           append_body: false
         env:

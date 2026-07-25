@@ -29,17 +29,17 @@ type HmacSha256 = Hmac<Sha256>;
 // 默认模板（各渠道内置 fallback）
 // ---------------------------------------------------------------------------
 
-const DEFAULT_DINGTALK_TEMPLATE: &str = r#"{"msgtype":"text","text":{"content":"📱 短信\n设备: {{device_name}}\n发送方: {{phone_number}}\n内容: {{content}}\n时间: {{local_time}}"}}"#;
+const DEFAULT_DINGTALK_TEMPLATE: &str = r#"{"msgtype":"text","text":{"content":"📱短信\n来自：{{phone_number}}\n内容：{{content}}\n\n本机号码：{{device_name}}\n时间：{{local_time}}"}}"#;
 
-const DEFAULT_FEISHU_TEMPLATE: &str = r#"{"msg_type":"text","content":{"text":"📱 短信\n设备: {{device_name}}\n发送方: {{phone_number}}\n内容: {{content}}\n时间: {{local_time}}"}}"#;
+const DEFAULT_FEISHU_TEMPLATE: &str = r#"{"msg_type":"text","content":{"text":"📱短信\n来自：{{phone_number}}\n内容：{{content}}\n\n本机号码：{{device_name}}\n时间：{{local_time}}"}}"#;
 
-const DEFAULT_WECOM_TEMPLATE: &str = r#"{"msgtype":"text","content":{"content":"📱 短信\n设备: {{device_name}}\n发送方: {{phone_number}}\n内容: {{content}}\n时间: {{local_time}}"}}"#;
+const DEFAULT_WECOM_TEMPLATE: &str = r#"{"msgtype":"text","content":{"content":"📱短信\n来自：{{phone_number}}\n内容：{{content}}\n\n本机号码：{{device_name}}\n时间：{{local_time}}"}}"#;
 
-const DEFAULT_DINGTALK_CALL_TEMPLATE: &str = r#"{"msgtype":"text","text":{"content":"📞 来电\n设备: {{device_name}}\n号码: {{phone_number}}\n时间: {{local_time}}\n时长: {{duration}}秒"}}"#;
+const DEFAULT_DINGTALK_CALL_TEMPLATE: &str = r#"{"msgtype":"text","text":{"content":"📞来电提醒\n来电号码：{{phone_number}}\n时长：{{duration}}秒\n\n本机号码：{{device_name}}\n时间：{{local_time}}"}}"#;
 
-const DEFAULT_FEISHU_CALL_TEMPLATE: &str = r#"{"msg_type":"text","content":{"text":"📞 来电\n设备: {{device_name}}\n号码: {{phone_number}}\n时间: {{local_time}}\n时长: {{duration}}秒"}}"#;
+const DEFAULT_FEISHU_CALL_TEMPLATE: &str = r#"{"msg_type":"text","content":{"text":"📞来电提醒\n来电号码：{{phone_number}}\n时长：{{duration}}秒\n\n本机号码：{{device_name}}\n时间：{{local_time}}"}}"#;
 
-const DEFAULT_WECOM_CALL_TEMPLATE: &str = r#"{"msgtype":"text","content":{"content":"📞 来电\n设备: {{device_name}}\n号码: {{phone_number}}\n时间: {{local_time}}\n时长: {{duration}}秒"}}"#;
+const DEFAULT_WECOM_CALL_TEMPLATE: &str = r#"{"msgtype":"text","content":{"content":"📞来电提醒\n来电号码：{{phone_number}}\n时长：{{duration}}秒\n\n本机号码：{{device_name}}\n时间：{{local_time}}"}}"#;
 
 // ---------------------------------------------------------------------------
 // WebhookSender
@@ -387,17 +387,17 @@ fn render_sms_for_channel(config: &NotificationChannel, sms: &SmsMessage, device
         }
         ChannelType::Email => {
             let body = format!(
-                "设备: {}\n发送方: {}\n内容: {}\n时间: {}",
-                device_label, sms.phone_number, sms.content, local_time
+                "来自：{}\n内容：{}\n\n本机号码：{}\n时间：{}",
+                sms.phone_number, sms.content, device_label, local_time
             );
-            format!("[CPE短信] {}\n\n{}", sms.phone_number, body)
+            format!("📱短信\n\n{}", body)
         }
         ChannelType::Bark => {
             let body = format!(
-                "设备: {}\n发送方: {}\n内容: {}\n时间: {}",
-                device_label, sms.phone_number, sms.content, local_time
+                "来自：{}\n内容：{}\n\n本机号码：{}\n时间：{}",
+                sms.phone_number, sms.content, device_label, local_time
             );
-            format!("📱 短信通知\n\n{}", body)
+            format!("📱短信\n\n{}", body)
         }
         ChannelType::None => String::new(),
     }
@@ -428,17 +428,17 @@ fn render_call_for_channel(config: &NotificationChannel, call: &CallRecord, devi
         }
         ChannelType::Email => {
             let body = format!(
-                "设备: {}\n号码: {}\n时间: {}\n时长: {}秒",
-                device_label, call.phone_number, local_time, call.duration
+                "来电号码：{}\n时长：{}秒\n\n本机号码：{}\n时间：{}",
+                call.phone_number, call.duration, device_label, local_time
             );
-            format!("[CPE来电] {}\n\n{}", call.phone_number, body)
+            format!("📞来电提醒\n\n{}", body)
         }
         ChannelType::Bark => {
             let body = format!(
-                "号码: {}\n时间: {}\n时长: {}秒",
-                call.phone_number, local_time, call.duration
+                "来电号码：{}\n时长：{}秒\n\n本机号码：{}\n时间：{}",
+                call.phone_number, call.duration, device_label, local_time
             );
-            format!("📞 来电通知\n\n{}", body)
+            format!("📞来电提醒\n\n{}", body)
         }
         ChannelType::None => String::new(),
     }
