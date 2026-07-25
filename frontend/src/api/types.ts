@@ -716,6 +716,7 @@ export interface NotificationChannel {
   bark: BarkConfig
   forward_sms: boolean
   forward_calls: boolean
+  device_name: string
 }
 
 // 默认空配置
@@ -743,6 +744,16 @@ export const DEFAULT_NOTIFICATION_CHANNEL: NotificationChannel = {
   },
   forward_sms: true,
   forward_calls: true,
+  device_name: '',
+}
+
+// ========== 定时重启类型 ==========
+
+export interface ScheduledRebootConfig {
+  enabled: boolean
+  interval_days: number
+  hour: number
+  minute: number
 }
 
 // ========== OTA 更新类型 ==========

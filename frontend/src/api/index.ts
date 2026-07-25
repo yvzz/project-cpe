@@ -543,6 +543,32 @@ class UDX710API {
     })
   }
 
+  // ========== 设备名称 ==========
+
+  async getDeviceName() {
+    return request<ApiResponse<{ device_name: string }>>('/system/device-name')
+  }
+
+  async setDeviceName(deviceName: string) {
+    return request<ApiResponse<{ device_name: string }>>('/system/device-name', {
+      method: 'POST',
+      body: JSON.stringify({ device_name: deviceName }),
+    })
+  }
+
+  // ========== 定时重启 ==========
+
+  async getScheduledReboot() {
+    return request<ApiResponse<import('./types').ScheduledRebootConfig>>('/system/scheduled-reboot')
+  }
+
+  async setScheduledReboot(config: import('./types').ScheduledRebootConfig) {
+    return request<ApiResponse<import('./types').ScheduledRebootConfig>>('/system/scheduled-reboot', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    })
+  }
+
   // ========== OTA 更新 ==========
 
   // 获取 OTA 状态

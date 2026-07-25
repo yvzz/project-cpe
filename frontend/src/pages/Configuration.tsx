@@ -49,10 +49,13 @@ import {
   Email,
   Smartphone,
   Block,
+  Timer,
+  Edit,
+  Save,
 } from '@mui/icons-material'
 import { api } from '../api'
 import ErrorSnackbar from '../components/ErrorSnackbar'
-import type { UsbModeResponse, AirplaneModeResponse, NotificationChannel, ChannelType, DingtalkConfig, FeishuConfig, WecomConfig, EmailConfig, BarkConfig } from '../api/types'
+import type { UsbModeResponse, AirplaneModeResponse, NotificationChannel, ChannelType, DingtalkConfig, FeishuConfig, WecomConfig, EmailConfig, BarkConfig, ScheduledRebootConfig } from '../api/types'
 import { DEFAULT_NOTIFICATION_CHANNEL } from '../api/types'
 
 // ========== 通知渠道辅助组件 ==========
@@ -286,16 +289,32 @@ export default function ConfigurationPage() {
   const [webhookLoading, setWebhookLoading] = useState(false)
   const [webhookTesting, setWebhookTesting] = useState(false)
 
+  // 设备名称
+  const [deviceName, setDeviceName] = useState('')
+  const [deviceNameEditing, setDeviceNameEditing] = useState(false)
+  const [deviceNameSaving, setDeviceNameSaving] = useState(false)
+
+  // 定时重启配置
+  const [scheduledReboot, setScheduledReboot] = useState<ScheduledRebootConfig>({
+    enabled: false,
+    interval_days: 1,
+    hour: 3,
+    minute: 0,
+  })
+  const [rebootConfigSaving, setRebootConfigSaving] = useState(false)
+
   const loadData = async () => {
     setLoading(true)
     setError(null)
     
     try {
-      const [dataRes, usbRes, airplaneModeRes, webhookRes] = await Promise.all([
+      const [dataRes, usbRes, airplaneModeRes, webhookRes, deviceNameRes, rebootConfigRes] = await Promise.all([
         api.getDataStatus(),
         api.getUsbMode(),
         api.getAirplaneMode(),
         api.getWebhookConfig(),
+        api.getDeviceName(),
+        api.getScheduledReboot(),
       ])
       
       if (dataRes.data) setDataStatus(dataRes.data.active)
@@ -305,6 +324,8 @@ export default function ConfigurationPage() {
       }
       if (airplaneModeRes.data) setAirplaneMode(airplaneModeRes.data)
       if (webhookRes.data) setNotificationChannel(webhookRes.data)
+      if (deviceNameRes.data) setDeviceName(deviceNameRes.data.device_name || '')
+      if (rebootConfigRes.data) setScheduledReboot(rebootConfigRes.data)
 
       // 加载健康检查
       await checkHealth()
@@ -491,6 +512,43 @@ export default function ConfigurationPage() {
     }
   }
 
+  // 保存设备名称
+  const handleSaveDeviceName = async () => {
+    setDeviceNameSaving(true)
+    setError(null)
+    try {
+      const response = await api.setDeviceName(deviceName.trim())
+      if (response.status === 'ok') {
+        setSuccess('设备名称已保存')
+        setDeviceNameEditing(false)
+      } else {
+        setError(response.message)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDeviceNameSaving(false)
+    }
+  }
+
+  // 保存定时重启配置
+  const handleSaveScheduledReboot = async () => {
+    setRebootConfigSaving(true)
+    setError(null)
+    try {
+      const response = await api.setScheduledReboot(scheduledReboot)
+      if (response.status === 'ok') {
+        setSuccess('定时重启配置已保存')
+      } else {
+        setError(response.message)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setRebootConfigSaving(false)
+    }
+  }
+
   if (loading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" minHeight="60vh">
@@ -603,6 +661,185 @@ export default function ConfigurationPage() {
                   )}
                 </Box>
               </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+
+      {/* ========== 设备名称 & 定时重启 ========== */}
+      <Grid container spacing={3} sx={{ mb: 3 }}>
+        {/* 设备名称卡片 */}
+        <Grid size={{ xs: 12, md: 6 }}>
+          <Card>
+            <CardHeader
+              avatar={<Edit color="primary" />}
+              title="设备名称"
+              titleTypographyProps={{ variant: 'h6', fontWeight: 600 }}
+              subheader="用于通知消息中标识本设备"
+              action={
+                !deviceNameEditing ? (
+                  <Button
+                    size="small"
+                    onClick={() => setDeviceNameEditing(true)}
+                  >
+                    编辑
+                  </Button>
+                ) : undefined
+              }
+            />
+            <CardContent>
+              {deviceNameEditing ? (
+                <Box>
+                  <TextField
+                    fullWidth
+                    value={deviceName}
+                    onChange={e => setDeviceName(e.target.value)}
+                    placeholder="例如：客厅CPE、办公室路由器"
+                    helperText="设置后，通知消息将显示此名称而非 SIM 号码"
+                    sx={{ mb: 2 }}
+                    autoFocus
+                  />
+                  <Box display="flex" gap={1}>
+                    <Button
+                      variant="contained"
+                      size="small"
+                      onClick={() => void handleSaveDeviceName()}
+                      disabled={deviceNameSaving}
+                      startIcon={deviceNameSaving ? <CircularProgress size={16} /> : <Save />}
+                    >
+                      {deviceNameSaving ? '保存中...' : '保存'}
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      onClick={() => {
+                        setDeviceNameEditing(false)
+                        // 重新加载原始值
+                        void loadData()
+                      }}
+                    >
+                      取消
+                    </Button>
+                  </Box>
+                </Box>
+              ) : (
+                <Box display="flex" alignItems="center" gap={1}>
+                  <Typography variant="h6" fontWeight={600}>
+                    {deviceName || '未设置'}
+                  </Typography>
+                  {!deviceName && (
+                    <Chip label="将使用 SIM 号码" size="small" color="warning" variant="outlined" />
+                  )}
+                </Box>
+              )}
+              <Alert severity="info" sx={{ mt: 2 }}>
+                <Typography variant="body2">
+                  通知消息中的设备标识优先级：设备名称 &gt; SIM 号码 &gt; "未知设备"
+                </Typography>
+              </Alert>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* 定时重启卡片 */}
+        <Grid size={{ xs: 12, md: 6 }}>
+          <Card>
+            <CardHeader
+              avatar={<Timer color={scheduledReboot.enabled ? 'success' : 'primary'} />}
+              title="定时重启"
+              titleTypographyProps={{ variant: 'h6', fontWeight: 600 }}
+              subheader="按设定时间自动重启设备"
+              action={
+                <Switch
+                  checked={scheduledReboot.enabled}
+                  onChange={e => setScheduledReboot(prev => ({ ...prev, enabled: e.target.checked }))}
+                  color="success"
+                />
+              }
+            />
+            <CardContent>
+              <Box sx={{ opacity: scheduledReboot.enabled ? 1 : 0.5, pointerEvents: scheduledReboot.enabled ? 'auto' : 'none' }}>
+                <Grid container spacing={2} alignItems="center">
+                  <Grid size={{ xs: 12 }}>
+                    <FormControl fullWidth>
+                      <FormLabel>重启频率</FormLabel>
+                      <RadioGroup
+                        row
+                        value={scheduledReboot.interval_days === 1 ? '1' : scheduledReboot.interval_days === 2 ? '2' : scheduledReboot.interval_days === 7 ? '7' : 'custom'}
+                        onChange={e => {
+                          const val = e.target.value
+                          setScheduledReboot(prev => ({
+                            ...prev,
+                            interval_days: val === 'custom' ? prev.interval_days : Number(val),
+                          }))
+                        }}
+                      >
+                        <FormControlLabel value="1" control={<Radio />} label="每天" />
+                        <FormControlLabel value="2" control={<Radio />} label="每 2 天" />
+                        <FormControlLabel value="7" control={<Radio />} label="每周" />
+                        <FormControlLabel value="custom" control={<Radio />} label="自定义" />
+                      </RadioGroup>
+                    </FormControl>
+                  </Grid>
+                  {scheduledReboot.interval_days !== 1 && scheduledReboot.interval_days !== 2 && scheduledReboot.interval_days !== 7 && (
+                    <Grid size={{ xs: 12, sm: 6 }}>
+                      <TextField
+                        fullWidth
+                        label="自定义天数"
+                        type="number"
+                        value={scheduledReboot.interval_days}
+                        onChange={e => setScheduledReboot(prev => ({ ...prev, interval_days: Math.max(1, Number(e.target.value)) }))}
+                        inputProps={{ min: 1, max: 30 }}
+                      />
+                    </Grid>
+                  )}
+                  <Grid size={{ xs: 6, sm: 3 }}>
+                    <TextField
+                      fullWidth
+                      label="时"
+                      type="number"
+                      value={scheduledReboot.hour}
+                      onChange={e => setScheduledReboot(prev => ({ ...prev, hour: Math.min(23, Math.max(0, Number(e.target.value))) }))}
+                      inputProps={{ min: 0, max: 23 }}
+                    />
+                  </Grid>
+                  <Grid size={{ xs: 6, sm: 3 }}>
+                    <TextField
+                      fullWidth
+                      label="分"
+                      type="number"
+                      value={scheduledReboot.minute}
+                      onChange={e => setScheduledReboot(prev => ({ ...prev, minute: Math.min(59, Math.max(0, Number(e.target.value))) }))}
+                      inputProps={{ min: 0, max: 59 }}
+                    />
+                  </Grid>
+                </Grid>
+                <Box display="flex" alignItems="center" gap={1} sx={{ mt: 2 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    下次重启时间：
+                  </Typography>
+                  <Chip
+                    label={scheduledReboot.enabled ? `每 ${scheduledReboot.interval_days} 天 ${String(scheduledReboot.hour).padStart(2, '0')}:${String(scheduledReboot.minute).padStart(2, '0')}` : '未启用'}
+                    color={scheduledReboot.enabled ? 'success' : 'default'}
+                    size="small"
+                  />
+                </Box>
+                <Button
+                  variant="contained"
+                  fullWidth
+                  sx={{ mt: 2 }}
+                  onClick={() => void handleSaveScheduledReboot()}
+                  disabled={rebootConfigSaving}
+                  startIcon={rebootConfigSaving ? <CircularProgress size={20} /> : <Save />}
+                >
+                  {rebootConfigSaving ? '保存中...' : '保存配置'}
+                </Button>
+              </Box>
+              {!scheduledReboot.enabled && (
+                <Alert severity="info" sx={{ mt: 1 }}>
+                  开启后将在指定时间自动重启设备以保持系统稳定
+                </Alert>
+              )}
             </CardContent>
           </Card>
         </Grid>
