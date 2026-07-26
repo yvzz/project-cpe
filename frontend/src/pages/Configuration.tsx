@@ -982,11 +982,12 @@ export default function ConfigurationPage() {
           onChange={handleAccordionChange('deviceName')}
         >
           <AccordionSummary expandIcon={<ExpandMore />}>
-            <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
+            <Box display="flex" alignItems="center" gap={1} width="100%">
               <Edit color="primary" />
               <Typography fontWeight={600}>
                 设备名称
               </Typography>
+              <Box flexGrow={1} />
               {deviceName ? (
                 <Chip label={deviceName} size="small" color="primary" variant="outlined" onClick={(e: MouseEvent) => e.stopPropagation()} />
               ) : (
@@ -1021,7 +1022,14 @@ export default function ConfigurationPage() {
                 <Button
                   variant="outlined"
                   size="small"
-                  onClick={() => { void loadData() }}
+                  onClick={async () => {
+                    try {
+                      const res = await api.getDeviceName()
+                      if (res.data) setDeviceName(res.data.device_name || '')
+                    } catch {
+                      // 静默失败
+                    }
+                  }}
                 >
                   重置
                 </Button>
@@ -1036,11 +1044,12 @@ export default function ConfigurationPage() {
           onChange={handleAccordionChange('scheduledReboot')}
         >
           <AccordionSummary expandIcon={<ExpandMore />}>
-            <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
+            <Box display="flex" alignItems="center" gap={1} width="100%">
               <Timer color={scheduledReboot.enabled ? 'success' : 'action'} />
               <Typography fontWeight={600}>
                 定时重启
               </Typography>
+              <Box flexGrow={1} />
               <Chip
                 label={scheduledReboot.enabled ? `每 ${scheduledReboot.interval_days} 天 ${String(scheduledReboot.hour).padStart(2, '0')}:${String(scheduledReboot.minute).padStart(2, '0')}` : '已关闭'}
                 size="small"
