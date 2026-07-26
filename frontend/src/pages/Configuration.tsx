@@ -532,6 +532,16 @@ export default function ConfigurationPage() {
     }
   }
 
+  // 重置设备名称为服务端值
+  const handleResetDeviceName = async () => {
+    try {
+      const res = await api.getDeviceName()
+      if (res.data) setDeviceName(res.data.device_name || '')
+    } catch {
+      // 静默失败
+    }
+  }
+
   // 保存定时重启配置
   const handleSaveScheduledReboot = async () => {
     setRebootConfigSaving(true)
@@ -1022,14 +1032,7 @@ export default function ConfigurationPage() {
                 <Button
                   variant="outlined"
                   size="small"
-                  onClick={async () => {
-                    try {
-                      const res = await api.getDeviceName()
-                      if (res.data) setDeviceName(res.data.device_name || '')
-                    } catch {
-                      // 静默失败
-                    }
-                  }}
+                  onClick={() => { void handleResetDeviceName() }}
                 >
                   重置
                 </Button>
