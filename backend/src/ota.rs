@@ -239,7 +239,8 @@ pub fn apply_ota_update(restart_now: bool) -> Result<String, String> {
     let staging_binary = format!("{}/udx710", OTA_STAGING_DIR);
     let staging_www = format!("{}/www", OTA_STAGING_DIR);
 
-    // 复制新的二进制文件（覆盖旧文件）
+    // 先删除旧二进制（运行中的文件可删除但不可覆盖），再复制新文件
+    let _ = fs::remove_file(OTA_BINARY_PATH);
     fs::copy(&staging_binary, OTA_BINARY_PATH)
         .map_err(|e| format!("Failed to copy binary: {}", e))?;
     
