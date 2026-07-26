@@ -271,8 +271,8 @@ jobs:
       - name: Update latest Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: latest
-          name: "Latest Build (${{ steps.version.outputs.version }})"
+          tag_name: ${{ steps.version.outputs.version }}
+          name: "Build (${{ steps.version.outputs.version }})"
           files: release/udx710-ota-${{ steps.version.outputs.version }}.tar.gz
           body: |
             ## OTA 更新包

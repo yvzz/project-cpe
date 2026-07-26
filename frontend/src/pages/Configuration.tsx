@@ -35,11 +35,6 @@ import {
   Select,
   MenuItem,
   InputLabel,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogContentText,
-  DialogActions,
 } from '@mui/material'
 import Grid from '@mui/material/Grid'
 import {
@@ -60,7 +55,6 @@ import {
   Timer,
   Edit,
   Save,
-  RestartAlt,
 } from '@mui/icons-material'
 import { api } from '../api'
 import ErrorSnackbar from '../components/ErrorSnackbar'
@@ -292,7 +286,6 @@ export default function ConfigurationPage() {
   // 健康检查状态
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null)
   const [healthLoading, setHealthLoading] = useState(false)
-  const [rebootDialogOpen, setRebootDialogOpen] = useState(false)
 
   // 通知渠道配置状态
   const [notificationChannel, setNotificationChannel] = useState<NotificationChannel>(DEFAULT_NOTIFICATION_CHANNEL)
@@ -611,24 +604,14 @@ export default function ConfigurationPage() {
               title="系统健康检查"
               titleTypographyProps={{ variant: 'h6', fontWeight: 600 }}
               action={
-                <Box display="flex" gap={1}>
-                  <Button
-                    size="small"
-                    color="error"
-                    onClick={() => setRebootDialogOpen(true)}
-                    startIcon={<RestartAlt />}
-                  >
-                    重启
-                  </Button>
-                  <Button
-                    size="small"
-                    onClick={() => void checkHealth()}
-                    disabled={healthLoading}
-                    startIcon={healthLoading ? <CircularProgress size={16} /> : undefined}
-                  >
-                    刷新
-                  </Button>
-                </Box>
+                <Button
+                  size="small"
+                  onClick={() => void checkHealth()}
+                  disabled={healthLoading}
+                  startIcon={healthLoading ? <CircularProgress size={16} /> : undefined}
+                >
+                  刷新
+                </Button>
               }
             />
             <CardContent>
