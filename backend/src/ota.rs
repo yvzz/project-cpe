@@ -239,16 +239,18 @@ pub fn apply_ota_update(restart_now: bool) -> Result<String, String> {
     let staging_binary = format!("{}/udx710", OTA_STAGING_DIR);
     let staging_www = format!("{}/www", OTA_STAGING_DIR);
 
-    // 先删除旧二进制（运行中的文件可删除但不可覆盖），再复制新文件
-    let _ = fs::remove_file(OTA_BINARY_PATH);
-    fs::copy(&staging_binary, OTA_BINARY_PATH)
-        .map_err(|e| format!("Failed to copy binary: {}", e))?;
-    
+    // 先将新二进制复制到临时路径，再用 rename 原子替换（避免 ETXTBSY）
+    let tmp_binary = format!("{}.new", OTA_BINARY_PATH);
+    fs::copy(&staging_binary, &tmp_binary)
+        .map_err(|e| format!("Failed to copy binary to temp path: {}", e))?;
     // 设置权限
     Command::new("chmod")
-        .args(["755", OTA_BINARY_PATH])
+        .args(["755", &tmp_binary])
         .output()
         .map_err(|e| format!("Failed to chmod: {}", e))?;
+    // 原子替换：rename 对运行中文件是安全的
+    fs::rename(&tmp_binary, OTA_BINARY_PATH)
+        .map_err(|e| format!("Failed to replace binary: {}", e))?;
 
     // 复制前端文件（删除旧目录，复制新目录）
     let _ = fs::remove_dir_all(OTA_WWW_PATH);

@@ -9,6 +9,7 @@
  * Copyright (c) 2025 by 1orz, All Rights Reserved. 
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Box,
   Typography,
@@ -44,11 +45,14 @@ import {
   SystemUpdateAlt,
   Cancel,
   RestartAlt,
+  Terminal as TerminalIcon,
+  ContentCopy,
 } from '@mui/icons-material'
 import { api } from '../api'
 import type { OtaStatusResponse, OtaUploadResponse } from '../api/types'
 
 export default function OtaUpdate() {
+  const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -58,6 +62,7 @@ export default function OtaUpdate() {
   const [status, setStatus] = useState<OtaStatusResponse | null>(null)
   const [uploadResult, setUploadResult] = useState<OtaUploadResponse | null>(null)
   const [confirmDialog, setConfirmDialog] = useState<'apply' | 'cancel' | null>(null)
+  const [safeModeDialog, setSafeModeDialog] = useState(false)
   
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -139,7 +144,11 @@ export default function OtaUpdate() {
         setError(res.message || '应用更新失败')
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      const errMsg = err instanceof Error ? err.message : String(err)
+      if (errMsg.includes('Text file busy')) {
+        setSafeModeDialog(true)
+      }
+      setError(errMsg)
     } finally {
       setApplying(false)
     }
@@ -476,6 +485,62 @@ export default function OtaUpdate() {
             color="error"
           >
             确认取消
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* 安全模式 - OTA apply 失败时的引导 */}
+      <Dialog open={safeModeDialog} onClose={() => setSafeModeDialog(false)} maxWidth="md" fullWidth>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <TerminalIcon color="warning" />
+          需要通过终端手动完成更新
+        </DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            <AlertTitle>无法自动替换运行中的程序文件</AlertTitle>
+            OTA 包已解压到 <code>/tmp/ota_staging</code>，但由于当前程序正在运行，无法直接覆盖。请通过 Web Terminal 执行以下命令完成更新：
+          </Alert>
+          <Box
+            component="pre"
+            sx={{
+              bgcolor: 'grey.900',
+              color: 'grey.100',
+              p: 2,
+              borderRadius: 1,
+              overflow: 'auto',
+              fontSize: '0.85rem',
+              lineHeight: 1.6,
+              cursor: 'pointer',
+            }}
+            onClick={(e) => {
+              const target = e.currentTarget as HTMLElement
+              navigator.clipboard.writeText(target.innerText)
+              setSuccess('命令已复制到剪贴板')
+            }}
+          >{`killall udx710 2>/dev/null; \
+rm -f /home/root/udx710; \
+cp /tmp/ota_staging/udx710 /home/root/udx710 && \
+chmod 755 /home/root/udx710 && \
+rm -rf /home/root/www && \
+cp -r /tmp/ota_staging/www /home/root/www && \
+rm -rf /tmp/ota_staging && \
+/home/root/udx710 -p 80 &`}
+          </Box>
+          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+            <ContentCopy fontSize="small" /> 点击命令框可复制，然后粘贴到终端执行
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSafeModeDialog(false)}>关闭</Button>
+          <Button
+            variant="contained"
+            startIcon={<TerminalIcon />}
+            onClick={() => {
+              setSafeModeDialog(false)
+              navigate('/terminal')
+            }}
+          >
+            前往 Web Terminal
           </Button>
         </DialogActions>
       </Dialog>
