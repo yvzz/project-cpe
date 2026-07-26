@@ -80,6 +80,7 @@ export default function OtaUpdate() {
   }, [])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadStatus()
   }, [loadStatus])
 
@@ -514,7 +515,7 @@ export default function OtaUpdate() {
             }}
             onClick={(e) => {
               const target = e.currentTarget as HTMLElement
-              navigator.clipboard.writeText(target.innerText)
+              void navigator.clipboard.writeText(target.innerText)
               setSuccess('命令已复制到剪贴板')
             }}
           >{`killall udx710 2>/dev/null; \
@@ -537,7 +538,7 @@ rm -rf /tmp/ota_staging && \
             startIcon={<TerminalIcon />}
             onClick={() => {
               setSafeModeDialog(false)
-              navigate('/terminal')
+              void navigate('/terminal')
             }}
           >
             前往 Web Terminal
