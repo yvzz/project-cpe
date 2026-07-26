@@ -24,12 +24,21 @@ import {
   Toolbar,
   Typography,
   IconButton,
+  Button,
   Box,
   Menu,
   MenuItem,
   ListItemIcon,
   ListItemText,
   Divider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
+  CircularProgress,
+  Snackbar,
+  Alert,
 } from '@mui/material'
 import {
   Menu as MenuIcon,
@@ -38,7 +47,9 @@ import {
   Brightness4 as DarkModeIcon,
   Brightness7 as LightModeIcon,
   Speed as SpeedIcon,
+  RestartAlt as RestartIcon,
 } from '@mui/icons-material'
+import { api } from '../../api'
 import { useTheme } from '../../contexts/ThemeContext'
 import { useRefreshInterval } from '../../contexts/RefreshContext'
 
@@ -59,6 +70,13 @@ export default function TopBar({
   const { triggerRefresh } = useRefreshInterval()
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null)
   const [refreshMenuAnchor, setRefreshMenuAnchor] = useState<null | HTMLElement>(null)
+  const [rebootDialogOpen, setRebootDialogOpen] = useState(false)
+  const [rebooting, setRebooting] = useState(false)
+  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({
+    open: false,
+    message: '',
+    severity: 'success',
+  })
 
   const handleMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
     setAnchorEl(event.currentTarget)
@@ -88,6 +106,18 @@ export default function TopBar({
   const handleThemeToggle = () => {
     toggleTheme()
     handleMenuClose()
+  }
+
+  const handleReboot = async () => {
+    setRebootDialogOpen(false)
+    setRebooting(true)
+    try {
+      await api.systemReboot(3)
+      setSnackbar({ open: true, message: '系统将在 3 秒后重启...', severity: 'success' })
+    } catch (err) {
+      setRebooting(false)
+      setSnackbar({ open: true, message: err instanceof Error ? err.message : String(err), severity: 'error' })
+    }
   }
 
   const getRefreshLabel = () => {
@@ -142,6 +172,17 @@ export default function TopBar({
             sx={{ display: { xs: 'inline-flex', sm: 'inline-flex' } }}
           >
             <RefreshIcon />
+          </IconButton>
+
+          {/* 重启按钮 */}
+          <IconButton
+            color="inherit"
+            onClick={() => setRebootDialogOpen(true)}
+            title="重启设备"
+            disabled={rebooting}
+            sx={{ display: { xs: 'inline-flex', sm: 'inline-flex' } }}
+          >
+            {rebooting ? <CircularProgress size={20} color="inherit" /> : <RestartIcon />}
           </IconButton>
 
           {/* 更多选项按钮 - 折叠其他功能 */}
@@ -249,6 +290,48 @@ export default function TopBar({
             手动刷新
           </MenuItem>
         </Menu>
+
+        {/* 重启确认弹窗 */}
+        <Dialog
+          open={rebootDialogOpen}
+          onClose={() => setRebootDialogOpen(false)}
+        >
+          <DialogTitle>确认重启</DialogTitle>
+          <DialogContent>
+            <DialogContentText>
+              确定要重启设备吗？设备重启期间所有服务将暂时不可用，预计需要 30-60 秒恢复。
+            </DialogContentText>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setRebootDialogOpen(false)} disabled={rebooting}>
+              取消
+            </Button>
+            <Button
+              onClick={() => void handleReboot()}
+              color="error"
+              variant="contained"
+              disabled={rebooting}
+              startIcon={rebooting ? <CircularProgress size={18} /> : <RestartIcon />}
+            >
+              {rebooting ? '重启中...' : '确认重启'}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* 重启结果提示 */}
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={5000}
+          onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+        >
+          <Alert
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+            severity={snackbar.severity}
+            variant="filled"
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>
       </Toolbar>
     </AppBar>
   )
