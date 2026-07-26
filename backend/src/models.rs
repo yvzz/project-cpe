@@ -111,9 +111,12 @@ pub struct DeviceInfoResponse {
     pub manufacturer: String,
     /// 型号
     pub model: String,
-    /// 固件版本
+    /// 固件版本（来自 modem D-Bus Revision，可能为空）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
+    /// 固件版本（来自构建版本号，保证非空，作为 revision 的兜底）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub firmware_version: Option<String>,
     /// 是否在线（射频开启）
     pub online: bool,
     /// 是否上电

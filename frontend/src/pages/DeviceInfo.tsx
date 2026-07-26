@@ -191,7 +191,7 @@ export default function DeviceInfoPage() {
                     </TableRow>
                     <TableRow>
                       <TableCell component="th">固件版本</TableCell>
-                      <TableCell>{deviceInfo?.revision || 'N/A'}</TableCell>
+                      <TableCell>{deviceInfo?.firmware_version || deviceInfo?.revision || 'N/A'}</TableCell>
                     </TableRow>
                     <TableRow>
                       <TableCell component="th">电源状态</TableCell>

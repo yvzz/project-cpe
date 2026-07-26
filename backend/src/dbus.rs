@@ -903,6 +903,36 @@ pub async fn get_network_info_data(conn: &Connection) -> zbus::Result<NetworkInf
     })
 }
 
+/// 从系统真实来源读取设备标识（device-tree / os-release），
+/// 用于替换 modem D-Bus 返回的 "Fake Modem" 等占位符。
+/// 仅在 D-Bus 返回空或包含 "fake" 时调用。
+fn read_real_device_identity() -> Option<(String, String)> {
+    // 1) device-tree model，例如 "Soyea UDX710"
+    if let Ok(s) = std::fs::read_to_string("/proc/device-tree/model") {
+        let s = s.trim_end_matches('\0').trim().to_string();
+        if !s.is_empty() && !s.to_lowercase().contains("fake") {
+            let manufacturer = s
+                .split_whitespace()
+                .next()
+                .unwrap_or("Unknown")
+                .to_string();
+            return Some((manufacturer, s));
+        }
+    }
+    // 2) /etc/os-release PRETTY_NAME，例如 "OpenWrt 22.03"
+    if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
+        for line in content.lines() {
+            if let Some(val) = line.strip_prefix("PRETTY_NAME=") {
+                let val = val.trim_matches('"').to_string();
+                if !val.is_empty() && !val.to_lowercase().contains("fake") {
+                    return Some(("Unknown".to_string(), val));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// 获取设备信息（来自 D-Bus Modem 接口）
 ///
 /// # Arguments
@@ -919,19 +949,38 @@ pub async fn get_device_info_data(conn: &Connection) -> zbus::Result<DeviceInfoR
         .and_then(|v| String::try_from(v.clone()).ok())
         .unwrap_or_default();
 
-    let manufacturer = props
+    let mut manufacturer = props
         .get("Manufacturer")
         .and_then(|v| String::try_from(v.clone()).ok())
         .unwrap_or_default();
 
-    let model = props
+    let mut model = props
         .get("Model")
         .and_then(|v| String::try_from(v.clone()).ok())
         .unwrap_or_default();
 
+    // 若 modem 返回占位符（Fake）或为空，尝试系统真实来源
+    let looks_fake = |s: &str| s.is_empty() || s.to_lowercase().contains("fake");
+    if looks_fake(&manufacturer) || looks_fake(&model) {
+        if let Some((real_mfr, real_model)) = read_real_device_identity() {
+            if looks_fake(&manufacturer) {
+                manufacturer = real_mfr;
+            }
+            if looks_fake(&model) {
+                model = real_model;
+            }
+        }
+    }
+
     let revision = props
         .get("Revision")
         .and_then(|v| String::try_from(v.clone()).ok());
+
+    // 固件版本：优先用 modem 的 revision，缺失时回退到构建版本号（真实可控）
+    let firmware_version = revision
+        .clone()
+        .filter(|r| !r.is_empty())
+        .or_else(|| Some(env!("CARGO_PKG_VERSION").to_string()));
 
     let online = props
         .get("Online")
@@ -948,6 +997,7 @@ pub async fn get_device_info_data(conn: &Connection) -> zbus::Result<DeviceInfoR
         manufacturer,
         model,
         revision,
+        firmware_version,
         online,
         powered,
     })

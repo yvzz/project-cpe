@@ -20,7 +20,8 @@ export interface DeviceInfo {
   imei: string // IMEI 设备序列号
   manufacturer: string // 制造商
   model: string // 型号
-  revision?: string // 固件版本
+  revision?: string // 固件版本（来自 modem D-Bus，可能为空）
+  firmware_version?: string // 固件版本（来自构建版本号，兜底）
   online: boolean // 是否在线（射频开启）
   powered: boolean // 是否上电
 }
