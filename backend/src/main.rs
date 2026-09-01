@@ -73,6 +73,12 @@ fn get_www_dir() -> PathBuf {
     exe_dir.join("www")
 }
 
+/// 数据连接 Watchdog 的基础轮询间隔（秒）
+///
+/// 仅决定 iptables 检查节奏和退避计时的粒度；
+/// 激活失败的实际重试间隔由 dbus 模块内的指数退避决定。
+const WATCHDOG_INTERVAL_SECS: u64 = 5;
+
 /// SPA fallback handler - 对于所有前端路由返回 index.html
 async fn spa_fallback(uri: Uri) -> Response {
     let path = uri.path();
@@ -228,14 +234,16 @@ async fn main() -> Result<()> {
         });
     }
     
-    // 启动数据连接 Watchdog（每 15 秒检查一次）
+    // 启动数据连接 Watchdog
+    // WATCHDOG_INTERVAL_SECS 是基础轮询间隔（用于 iptables 检查和退避计时精度），
+    // 数据连接激活失败后会按 5s→15s→30s→60s→120s 指数退避，不会固定间隔重试
     {
         let conn_clone = Arc::clone(&dbus_conn);
         tokio::spawn(async move {
             // 初始延迟 5 秒，等待系统稳定
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            tracing::info!(interval = 15, "Watchdog started");
-            dbus::data_connection_watchdog(conn_clone, 5).await;
+            tracing::info!(interval = WATCHDOG_INTERVAL_SECS, "Watchdog started");
+            dbus::data_connection_watchdog(conn_clone, WATCHDOG_INTERVAL_SECS).await;
         });
     }
 

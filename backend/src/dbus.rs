@@ -13,6 +13,7 @@
 //! 处理与 ofono D-Bus 服务的通信
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 use zbus::{proxy, zvariant::OwnedValue, Connection, Proxy};
 
@@ -575,6 +576,154 @@ fn get_recommended_apn(mcc: &str, mnc: &str) -> Option<(&'static str, &'static s
     }
 }
 
+/// 读取当前网络注册信息中的 MCC/MNC
+///
+/// # Returns
+/// 成功返回 `(mcc, mnc)`；属性缺失、为空或读取失败时返回 `None`
+async fn read_operator_mcc_mnc(conn: &Connection) -> Option<(String, String)> {
+    let net_proxy = NetworkRegistrationProxy::new(conn).await.ok()?;
+
+    let props = net_proxy.get_properties().await.ok()?;
+
+    let mcc = props
+        .get("MobileCountryCode")
+        .and_then(|v| String::try_from(v.clone()).ok())
+        .unwrap_or_default();
+
+    let mnc = props
+        .get("MobileNetworkCode")
+        .and_then(|v| String::try_from(v.clone()).ok())
+        .unwrap_or_default();
+
+    if mcc.is_empty() || mnc.is_empty() {
+        return None;
+    }
+
+    Some((mcc, mnc))
+}
+
+/// 读取当前 SIM 卡的 ICCID
+///
+/// ICCID 唯一标识一张 SIM 卡，watchdog 用它来判断是否发生了换卡。
+///
+/// # Returns
+/// 读取成功且非空时返回 `Some(iccid)`，否则返回 `None`
+async fn read_sim_iccid(conn: &Connection) -> Option<String> {
+    let sim_proxy = SimManagerProxy::new(conn).await.ok()?;
+
+    let props = sim_proxy.get_properties().await.ok()?;
+
+    props
+        .get("CardIdentifier")
+        .and_then(|v| String::try_from(v.clone()).ok())
+        .filter(|iccid| !iccid.is_empty())
+}
+
+/// 判断 AT 指令响应是否表示失败
+///
+/// 不同模组的回包格式差异很大，这里采用保守策略：
+/// 只有响应为空，或明确包含 ERROR / NO CARRIER 时才判为失败，
+/// 其余（含 "OK"、以及模组直接回显指令的情形）都视为成功。
+fn at_response_failed(response: &str) -> bool {
+    let trimmed = response.trim();
+
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    let upper = trimmed.to_uppercase();
+    upper.contains("ERROR") || upper.contains("NO CARRIER")
+}
+
+/// 等待 SIM 卡就绪
+///
+/// 轮询 `org.ofono.SimManager` 的 `Present` 属性，直到 SIM 被识别。
+/// 轮询的睡眠在锁外进行，不会长时间占用全局 D-Bus 串行锁。
+async fn wait_for_sim_ready(conn: &Connection, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let present = with_serial(async {
+            let proxy = SimManagerProxy::new(conn)
+                .await
+                .map_err(|e| format!("SimManager unavailable: {}", e))?;
+
+            let props = proxy
+                .get_properties()
+                .await
+                .map_err(|e| format!("Failed to read SIM properties: {}", e))?;
+
+            Ok::<bool, String>(
+                props
+                    .get("Present")
+                    .and_then(|v| bool::try_from(v.clone()).ok())
+                    .unwrap_or(false),
+            )
+        })
+        .await?;
+
+        if present {
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            return Err(format!("SIM not present after {}s", timeout.as_secs()));
+        }
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// 等待网络注册完成
+///
+/// 轮询 `org.ofono.NetworkRegistration` 的 `Status` 属性，
+/// 直到变为 registered / roaming，或超时。
+///
+/// # Returns
+/// * `Ok(status)` - 已注册，返回最终状态
+/// * `Err(msg)` - 超时或读取失败
+async fn wait_for_network_registered(
+    conn: &Connection,
+    timeout: Duration,
+) -> Result<String, String> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let status = with_serial(async {
+            let proxy = NetworkRegistrationProxy::new(conn)
+                .await
+                .map_err(|e| format!("NetworkRegistration unavailable: {}", e))?;
+
+            let props = proxy
+                .get_properties()
+                .await
+                .map_err(|e| format!("Failed to read registration: {}", e))?;
+
+            Ok::<String, String>(
+                props
+                    .get("Status")
+                    .and_then(|v| String::try_from(v.clone()).ok())
+                    .unwrap_or_else(|| "unknown".to_string()),
+            )
+        })
+        .await?;
+
+        if status == "registered" || status == "roaming" {
+            return Ok(status);
+        }
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "Network not registered after {}s (status: {})",
+                timeout.as_secs(),
+                status
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
 /// 自动配置 APN（根据 SIM 卡运营商）
 ///
 /// 根据 SIM 卡的 MCC/MNC 自动查找并设置推荐的 APN 配置
@@ -587,29 +736,10 @@ fn get_recommended_apn(mcc: &str, mnc: &str) -> Option<(&'static str, &'static s
 /// 配置结果消息
 async fn auto_configure_apn(conn: &Connection, context_path: &str) -> Result<String, String> {
     // 1. 获取网络注册信息中的 MCC/MNC
-    let net_proxy = NetworkRegistrationProxy::new(conn)
+    let (mcc, mnc) = read_operator_mcc_mnc(conn)
         .await
-        .map_err(|e| format!("Failed to create network proxy: {}", e))?;
-    
-    let props = net_proxy
-        .get_properties()
-        .await
-        .map_err(|e| format!("Failed to get network properties: {}", e))?;
-    
-    let mcc = props
-        .get("MobileCountryCode")
-        .and_then(|v| String::try_from(v.clone()).ok())
-        .unwrap_or_default();
-    
-    let mnc = props
-        .get("MobileNetworkCode")
-        .and_then(|v| String::try_from(v.clone()).ok())
-        .unwrap_or_default();
-    
-    if mcc.is_empty() || mnc.is_empty() {
-        return Err("MCC/MNC not available".to_string());
-    }
-    
+        .ok_or_else(|| "MCC/MNC not available".to_string())?;
+
     // 2. 查找推荐 APN
     let (apn, protocol) = get_recommended_apn(&mcc, &mnc)
         .ok_or_else(|| format!("No recommended APN for MCC={} MNC={}", mcc, mnc))?;
@@ -626,16 +756,94 @@ async fn auto_configure_apn(conn: &Connection, context_path: &str) -> Result<Str
     Ok(format!("Auto-configured APN: {} ({})", apn, protocol))
 }
 
+/// 连续激活失败达到该次数后，进入长时间冷却
+const MAX_CONSECUTIVE_FAILURES: u32 = 8;
+
+/// 放弃重试后的冷却时长（秒），冷却结束后重新开始计数
+const GIVE_UP_COOLDOWN_SECS: u64 = 300;
+
+/// 连续失败后的退避档位（秒）
+const BACKOFF_STEPS: [u64; 5] = [5, 15, 30, 60, 120];
+
+/// 数据连接检查结果分类
+///
+/// 用于让 watchdog 区分「环境未就绪」和「真正的激活失败」，
+/// 只有后者才计入连续失败次数并触发退避，避免网络暂时不可用时被误判为故障。
+enum DataCheckOutcome {
+    /// 连接正常，或本次已成功恢复
+    Healthy,
+    /// 环境未就绪（未注册网络、取不到 context、APN 无法确定），不计入失败
+    Waiting,
+    /// 激活失败，计入连续失败次数
+    Failed,
+}
+
+/// Watchdog 运行状态
+struct WatchdogState {
+    /// 上次观察到的 SIM ICCID，用于检测换卡
+    last_iccid: Option<String>,
+    /// 连续激活失败次数
+    consecutive_failures: u32,
+    /// 下一次允许尝试激活的时间点
+    next_attempt_at: Instant,
+}
+
+impl WatchdogState {
+    fn new() -> Self {
+        Self {
+            last_iccid: None,
+            consecutive_failures: 0,
+            next_attempt_at: Instant::now(),
+        }
+    }
+
+    /// 当前失败次数对应的退避时长（指数退避，封顶 120 秒）
+    fn backoff(&self) -> Duration {
+        let idx = (self.consecutive_failures as usize).min(BACKOFF_STEPS.len() - 1);
+        Duration::from_secs(BACKOFF_STEPS[idx])
+    }
+
+    /// 记录一次激活失败，并计算下次尝试时间
+    fn record_failure(&mut self) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+
+        if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+            // 连续失败太多次，说明当前 APN 或网络状态本身有问题，
+            // 继续高频重试只会把 RIL 打进 "Operation already in progress" 的半死状态。
+            // 这里改为长时间冷却，并清零计数，保证之后还能自动恢复而不永久卡死。
+            warn!(
+                failures = self.consecutive_failures,
+                cooldown_secs = GIVE_UP_COOLDOWN_SECS,
+                "Watchdog: too many consecutive activation failures, entering cooldown"
+            );
+            self.consecutive_failures = 0;
+            self.next_attempt_at = Instant::now() + Duration::from_secs(GIVE_UP_COOLDOWN_SECS);
+        } else {
+            self.next_attempt_at = Instant::now() + self.backoff();
+        }
+    }
+
+    /// 记录一次成功（或状态恢复），清零失败计数
+    fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        self.next_attempt_at = Instant::now();
+    }
+}
+
 /// 检查并恢复数据连接
 ///
-/// 这个函数被 watchdog 调用，检查数据连接状态并在需要时恢复
+/// 这个函数被 watchdog 调用，检查数据连接状态并在需要时恢复。
 ///
 /// # Arguments
 /// * `conn` - D-Bus 连接
+/// * `state` - watchdog 运行状态（换卡检测 + 退避计数）
 ///
 /// # Returns
-/// 当前状态描述字符串
-async fn check_and_restore_data_connection(conn: &Connection) -> String {
+/// `(结果分类, 状态描述字符串)`
+async fn check_and_restore_data_connection(
+    conn: &Connection,
+    state: &mut WatchdogState,
+) -> (DataCheckOutcome, String) {
     // 1. 检查网络注册状态
     let net_status = match NetworkRegistrationProxy::new(conn).await {
         Ok(net_proxy) => {
@@ -647,35 +855,56 @@ async fn check_and_restore_data_connection(conn: &Connection) -> String {
                 Err(_) => "unknown".to_string(),
             }
         }
-        Err(_) => return "Network proxy unavailable".to_string(),
+        Err(_) => return (DataCheckOutcome::Waiting, "Network proxy unavailable".to_string()),
     };
     
-    // 网络未注册时不尝试恢复
+    // 网络未注册时不尝试恢复，这只是等待，不是故障，不计入失败
     if net_status != "registered" && net_status != "roaming" {
-        return format!("Waiting for network (status: {})", net_status);
+        return (
+            DataCheckOutcome::Waiting,
+            format!("Waiting for network (status: {})", net_status),
+        );
     }
     
-    // 2. 查找 internet context
+    // 2. 检测换卡
+    //    ICCID 唯一标识一张 SIM 卡，它变化就说明卡被换了。
+    //    此时旧卡遗留的 APN 对新卡几乎必然无效，必须按新卡运营商重配 ——
+    //    这正是「能读卡但激活不了蜂窝数据」的根因所在。
+    let iccid = read_sim_iccid(conn).await;
+    let sim_changed = match (&state.last_iccid, &iccid) {
+        (Some(prev), Some(cur)) => prev != cur,
+        _ => false,
+    };
+    if iccid.is_some() {
+        state.last_iccid = iccid;
+    }
+    if sim_changed {
+        info!("Watchdog: SIM changed, APN will be reconfigured");
+        // 换卡后重新开始计数，否则旧的失败计数会让新卡一直得不到重试机会
+        state.record_success();
+    }
+    
+    // 3. 查找 internet context
     let context_path = match find_internet_context(conn).await {
         Ok(path) => path,
-        Err(e) => return format!("No internet context: {}", e),
+        Err(e) => return (DataCheckOutcome::Waiting, format!("No internet context: {}", e)),
     };
     
-    // 3. 获取 context 属性
+    // 4. 获取 context 属性
     let proxy = match ConnectionContextProxy::builder(conn)
         .path(context_path.as_str())
         .and_then(|b| Ok(b))
     {
         Ok(builder) => match builder.build().await {
             Ok(p) => p,
-            Err(e) => return format!("Context proxy error: {}", e),
+            Err(e) => return (DataCheckOutcome::Waiting, format!("Context proxy error: {}", e)),
         },
-        Err(e) => return format!("Context path error: {}", e),
+        Err(e) => return (DataCheckOutcome::Waiting, format!("Context path error: {}", e)),
     };
     
     let props = match proxy.get_properties().await {
         Ok(p) => p,
-        Err(e) => return format!("Get properties error: {}", e),
+        Err(e) => return (DataCheckOutcome::Waiting, format!("Get properties error: {}", e)),
     };
     
     let apn = props
@@ -688,30 +917,72 @@ async fn check_and_restore_data_connection(conn: &Connection) -> String {
         .and_then(|v| bool::try_from(v.clone()).ok())
         .unwrap_or(false);
     
-    // 4. 如果 APN 为空，尝试自动配置
-    if apn.is_empty() {
+    // 5. 判定是否需要重配 APN
+    //    - APN 为空：新卡还没配过
+    //    - 检测到换卡：旧卡 APN 对新卡无效，必须覆盖
+    //
+    //    注意：不会因为「APN 与推荐值不一致」就覆盖，
+    //    否则会冲掉用户手动设置的自定义 APN。
+    let need_apn_reconfig = apn.is_empty() || sim_changed;
+    
+    if need_apn_reconfig {
+        let reason = if apn.is_empty() {
+            "APN not configured"
+        } else {
+            "SIM changed"
+        };
+        
         match auto_configure_apn(conn, &context_path).await {
             Ok(msg) => {
                 // APN 配置成功后，继续尝试激活
                 match set_data_connection(conn, true).await {
-                    Ok(_) => return format!("{}, connection activated", msg),
-                    Err(e) => return format!("{}, but activation failed: {}", msg, e),
+                    Ok(_) => {
+                        state.record_success();
+                        return (
+                            DataCheckOutcome::Healthy,
+                            format!("{} ({}), connection activated", msg, reason),
+                        );
+                    }
+                    Err(e) => {
+                        state.record_failure();
+                        return (
+                            DataCheckOutcome::Failed,
+                            format!("{} ({}), but activation failed: {}", msg, reason, e),
+                        );
+                    }
                 }
             }
-            Err(e) => return format!("APN not configured: {}", e),
+            Err(e) => {
+                // 无法根据 MCC/MNC 推断 APN（境外卡或注册信息还没就绪），
+                // 此时不要拿可能错误的旧 APN 反复重试，等下次再试
+                return (
+                    DataCheckOutcome::Waiting,
+                    format!("APN auto-config unavailable ({}): {}", reason, e),
+                );
+            }
         }
     }
     
-    // 5. 如果连接未激活，尝试激活
+    // 6. 如果连接未激活，尝试激活
     if !active {
         match set_data_connection(conn, true).await {
-            Ok(_) => return format!("Connection restored (APN: {})", apn),
-            Err(e) => return format!("Activation failed: {}", e),
+            Ok(_) => {
+                state.record_success();
+                return (
+                    DataCheckOutcome::Healthy,
+                    format!("Connection restored (APN: {})", apn),
+                );
+            }
+            Err(e) => {
+                state.record_failure();
+                return (DataCheckOutcome::Failed, format!("Activation failed: {}", e));
+            }
         }
     }
     
-    // 6. 连接正常
-    format!("Connected (APN: {})", apn)
+    // 7. 连接正常
+    state.record_success();
+    (DataCheckOutcome::Healthy, format!("Connected (APN: {})", apn))
 }
 
 /// 数据连接 Watchdog - 后台轮询监控并自动恢复
@@ -719,14 +990,19 @@ async fn check_and_restore_data_connection(conn: &Connection) -> String {
 /// 持续监控数据连接状态，在断开时自动尝试恢复。
 /// 支持自动识别运营商并配置 APN。
 ///
+/// 失败重试采用指数退避（5s → 15s → 30s → 60s → 120s），连续失败 8 次后进入
+/// 5 分钟冷却，避免高频重试把 RIL 打进 "Operation already in progress" 的半死状态。
+/// 检测到换卡（ICCID 变化）会立即清零退避并按新卡运营商重配 APN。
+///
 /// # Arguments
 /// * `conn` - D-Bus 连接
-/// * `interval_secs` - 检查间隔（秒）
+/// * `interval_secs` - 基础轮询间隔（秒），仅用于 iptables 检查和退避计时精度
 pub async fn data_connection_watchdog(conn: std::sync::Arc<Connection>, interval_secs: u64) {
     use crate::iptables::{flush_iptables, get_iptables_rule_count};
     
     let mut last_data_log = String::new();
     let mut last_iptables_action = false; // 上次是否清空了 iptables
+    let mut state = WatchdogState::new();
     
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
@@ -761,12 +1037,32 @@ pub async fn data_connection_watchdog(conn: std::sync::Arc<Connection>, interval
         }
         
         // 2. 检查并恢复数据连接
-        let result = check_and_restore_data_connection(&conn).await;
+        //    按退避节奏调度：连续失败后逐步拉长尝试间隔，
+        //    未到下次尝试时间就跳过本轮，只保留 iptables 检查的原有节奏
+        if Instant::now() < state.next_attempt_at {
+            continue;
+        }
         
-        // 只在状态变化时打印日志，避免刷屏
-        if result != last_data_log {
-            info!(status = %result, "Watchdog: data connection");
-            last_data_log = result;
+        let (outcome, result) = check_and_restore_data_connection(&conn, &mut state).await;
+        
+        match outcome {
+            DataCheckOutcome::Failed => {
+                // 失败始终打印，便于现场定位；同时清空 last_data_log，
+                // 保证下次恢复到正常状态时一定会被记录
+                warn!(
+                    status = %result,
+                    consecutive_failures = state.consecutive_failures,
+                    "Watchdog: data connection failed"
+                );
+                last_data_log.clear();
+            }
+            _ => {
+                // 只在状态变化时打印日志，避免刷屏
+                if result != last_data_log {
+                    info!(status = %result, "Watchdog: data connection");
+                    last_data_log = result;
+                }
+            }
         }
     }
 }
@@ -1781,6 +2077,16 @@ pub async fn set_call_setting(conn: &Connection, property: &str, value: &str) ->
 
 use crate::models::SimSlotResponse;
 
+/// AT+SPCONFIGSIMSLOT 中代表卡槽 1 的参数值
+const SIM_SLOT_1_VALUE: &str = "66051";
+/// AT+SPCONFIGSIMSLOT 中代表卡槽 2 的参数值
+const SIM_SLOT_2_VALUE: &str = "66306";
+
+/// 切卡后等待 SIM 卡就绪的超时
+const SIM_READY_TIMEOUT: Duration = Duration::from_secs(20);
+/// 切卡后等待网络注册的超时
+const NETWORK_REGISTER_TIMEOUT: Duration = Duration::from_secs(40);
+
 /// 获取 SIM 卡槽信息
 pub async fn get_sim_slot(conn: &Connection) -> zbus::Result<SimSlotResponse> {
     with_serial(async {
@@ -1791,14 +2097,17 @@ pub async fn get_sim_slot(conn: &Connection) -> zbus::Result<SimSlotResponse> {
         let raw_value = response
             .lines()
             .find(|line| line.contains("+SPCONFIGSIMSLOT:"))
-            .and_then(|line| line.split(':').nth(1))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| String::new());
+            .and_then(|line| line.split_once(':'))
+            .map(|(_, value)| value.trim().to_string())
+            .unwrap_or_default();
         
-        // 根据值判断卡槽（这个需要根据实际设备的规则来解析）
-        // 66051 可能表示卡槽 1，66306 可能表示卡槽 2
-        // 您需要提供切换命令来确认规则
-        let active_slot = if raw_value.contains("66051") { 1 } else if raw_value.contains("66306") { 2 } else { 0 };
+        // 按数值解析卡槽，避免用字符串包含匹配导致误判
+        // （例如 66306 里包含子串 "306"，而 66051 与 66306 本身也可能互相干扰）
+        let active_slot = match raw_value.parse::<u32>() {
+            Ok(66051) => 1,
+            Ok(66306) => 2,
+            _ => 0, // 0 表示无法识别，调用方应据此提示而不是盲切
+        };
         
         Ok(SimSlotResponse {
             active_slot,
@@ -1808,23 +2117,152 @@ pub async fn get_sim_slot(conn: &Connection) -> zbus::Result<SimSlotResponse> {
 }
 
 /// 切换 SIM 卡槽
+///
+/// 这是一个完整的热切换流程，而不只是一条 AT 指令。原来只发指令、不做收尾，
+/// 会导致 ofono 的 gprs context 一直残留旧卡的 APN 和 PDP 会话，
+/// 表现为「SIM 能读到，但蜂窝数据永远激活不了，重启也没用」。
+///
+/// ## 完整流程
+/// 1. 拆掉当前 PDP 连接，避免旧卡会话残留
+/// 2. 让 modem 下线（Online=false），强制其重新读卡
+/// 3. 发送切卡指令，并校验 AT 响应（原来完全不校验，ERROR 也当成功）
+/// 4. modem 上线（Online=true）
+/// 5. 轮询等待 SIM 就绪（Present=true）
+/// 6. 轮询等待网络注册（registered / roaming）
+/// 7. 按新卡的 MCC/MNC 重新配置 APN，覆盖旧卡残留值
+/// 8. 重新激活数据连接
+///
+/// ## 锁的注意事项
+/// 全局 D-Bus 串行锁只在短操作期间持有，所有等待都在锁外进行，
+/// 否则切卡期间会阻塞其它所有 API 调用。
+/// 另外，`auto_configure_apn` / `set_data_connection` 内部会自行加锁，
+/// 因此调用它们时外面不能再套 `with_serial`，否则会死锁。
+///
+/// # Returns
+/// 各阶段执行结果组成的描述字符串
 pub async fn switch_sim_slot(conn: &Connection, slot: u8) -> zbus::Result<String> {
-    with_serial(async {
-        let proxy = Proxy::new(conn, "org.ofono", "/ril_0", "org.ofono.Modem").await?;
-        
-        // 根据卡槽号生成 AT 命令
-        // 注意：这个命令格式需要根据您的设备文档确认
-        // 可能是 AT+SPCONFIGSIMSLOT=1 或 AT+SPCONFIGSIMSLOT=66051
-        let value = match slot {
-            1 => "66051",  // 卡槽 1 的值
-            2 => "66306",  // 卡槽 2 的值（猜测，需要您确认）
-            _ => return Err(zbus::Error::Failure("Invalid slot number, must be 1 or 2".to_string())),
-        };
-        
+    let value = match slot {
+        1 => SIM_SLOT_1_VALUE,
+        2 => SIM_SLOT_2_VALUE,
+        _ => return Err(zbus::Error::Failure("Invalid slot number, must be 1 or 2".to_string())),
+    };
+
+    let mut steps: Vec<String> = Vec::new();
+
+    // ---- 阶段 1：拆连接 + modem 下线 + 发切卡指令（短操作，持锁串行化）----
+    let (at_response, phase1_notes) = with_serial(async {
+        let mut notes = Vec::new();
+
+        // 1.1 拆掉当前 PDP 连接，避免旧卡的会话残留到新卡上
+        if let Ok(context_path) = find_internet_context(conn).await {
+            if let Ok(proxy) = ConnectionContextProxy::builder(conn)
+                .path(context_path.as_str())?
+                .build()
+                .await
+            {
+                if proxy
+                    .set_property("Active", zbus::zvariant::Value::Bool(false))
+                    .await
+                    .is_ok()
+                {
+                    notes.push(format!("deactivated {}", context_path));
+                }
+            }
+        }
+
+        // 1.2 让 modem 下线，强制它重新枚举 SIM
+        let modem = ModemProxy::new(conn).await?;
+        let _ = modem
+            .set_property("Online", zbus::zvariant::Value::Bool(false))
+            .await;
+
+        // 1.3 发送切卡指令
+        //     注意：zbus 生成的 ModemProxy 不暴露 call 方法，
+        //     发 AT 指令必须用原生 Proxy（与 send_at_command 保持一致）
+        let at_proxy = Proxy::new(conn, "org.ofono", "/ril_0", "org.ofono.Modem").await?;
         let cmd = format!("AT+SPCONFIGSIMSLOT={}", value);
-        let response: String = proxy.call("SendAtcmd", &(cmd.as_str())).await?;
-        
-        Ok(response)
-    }).await
+        let response: String = at_proxy.call("SendAtcmd", &(cmd.as_str())).await?;
+
+        Ok::<(String, Vec<String>), zbus::Error>((response, notes))
+    })
+    .await?;
+
+    steps.extend(phase1_notes);
+
+    // 1.4 校验 AT 响应。原来这里直接返回，modem 回 ERROR 也被当成切换成功
+    if at_response_failed(&at_response) {
+        // 尝试把 modem 恢复上线，避免切卡失败后 modem 一直处于离线状态
+        let _ = with_serial(async {
+            let modem = ModemProxy::new(conn).await?;
+            modem.set_property("Online", zbus::zvariant::Value::Bool(true)).await
+        })
+        .await;
+
+        return Err(zbus::Error::Failure(format!(
+            "Modem rejected SIM slot switch (response: {})",
+            at_response.trim()
+        )));
+    }
+    steps.push(format!("slot {} command accepted", slot));
+
+    // ---- 阶段 2：modem 上线并等待新卡就绪（等待在锁外进行）----
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    if let Err(e) = with_serial(async {
+        let modem = ModemProxy::new(conn).await?;
+        modem.set_property("Online", zbus::zvariant::Value::Bool(true)).await
+    })
+    .await
+    {
+        steps.push(format!("failed to bring modem online: {}", e));
+    } else {
+        steps.push("modem back online".to_string());
+    }
+
+    // 2.1 等待 SIM 被识别
+    match wait_for_sim_ready(conn, SIM_READY_TIMEOUT).await {
+        Ok(()) => steps.push("SIM ready".to_string()),
+        Err(e) => {
+            warn!(error = %e, "SIM slot switch: SIM not ready in time");
+            steps.push(format!("SIM not ready: {}", e));
+        }
+    }
+
+    // 2.2 等待网络注册完成。注册不上不代表切卡失败（可能新卡无信号/未开通），
+    //     所以只记录状态，不中断流程
+    match wait_for_network_registered(conn, NETWORK_REGISTER_TIMEOUT).await {
+        Ok(status) => steps.push(format!("network {}", status)),
+        Err(e) => {
+            warn!(error = %e, "SIM slot switch: network not registered in time");
+            steps.push(format!("network not registered: {}", e));
+        }
+    }
+
+    // ---- 阶段 3：按新卡运营商重配 APN ----
+    // 注意：auto_configure_apn 内部会调用 set_apn_property 自行加串行锁，
+    // 这里不能再包 with_serial，否则同一个 tokio Mutex 重入会死锁
+    match find_internet_context(conn).await {
+        Ok(context_path) => match auto_configure_apn(conn, &context_path).await {
+            Ok(msg) => steps.push(msg),
+            Err(e) => {
+                // 境外卡或注册信息尚未就绪时无法推断 APN，保留原值并提示
+                steps.push(format!("APN left unchanged: {}", e));
+            }
+        },
+        Err(e) => steps.push(format!("APN not reconfigured: {}", e)),
+    }
+
+    // ---- 阶段 4：重新激活数据连接 ----
+    match set_data_connection(conn, true).await {
+        Ok(()) => steps.push("data connection activated".to_string()),
+        Err(e) => {
+            warn!(error = %e, "SIM slot switch: failed to activate data connection");
+            steps.push(format!("activation failed: {}", e));
+        }
+    }
+
+    let summary = steps.join("; ");
+    info!(steps = %summary, "SIM slot switched");
+    Ok(summary)
 }
 
