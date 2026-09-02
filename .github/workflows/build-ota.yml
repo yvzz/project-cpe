@@ -1,8 +1,8 @@
 name: Build OTA Package
 
 on:
-  push:
-    branches: main
+  # push:
+  #   branches: main
   workflow_dispatch:
     inputs:
       use_upx:
