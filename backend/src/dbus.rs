@@ -830,6 +830,83 @@ impl WatchdogState {
     }
 }
 
+/// 物理换卡（热插拔）后的完整恢复流程。
+///
+/// 与 `switch_sim_slot` 的区别：卡是物理插拔的，模组已经认到新卡，
+/// 不需要再发 `AT+SPCONFIGSIMSLOT`；但仍必须做「拆承载 + Modem.Online
+/// 重枚举 + 等就绪/注册 + 重配 APN + 激活」，否则被硬拔卡留下的 stuck
+/// PDP 承载会卡死在 RIL/运营侧，只发 `Active=true` 清不掉，只能重启。
+///
+/// 由 watchdog 在检测到 ICCID 变化时调用。内部各子调用自带 `with_serial`，
+/// 因此这里不要再包 `with_serial`。
+async fn recover_after_sim_change(
+    conn: &Connection,
+    state: &mut WatchdogState,
+) -> (DataCheckOutcome, String) {
+    // 1. 先拆掉残留的 PDP 承载，清掉 stuck bearer
+    if let Err(e) = set_data_connection(conn, false).await {
+        warn!(error = %e, "recover: deactivate failed (may already be down)");
+    }
+
+    // 2. 重枚举 modem，强制清除卡死态
+    if let Err(e) = reenumerate_modem(conn).await {
+        state.record_failure();
+        return (DataCheckOutcome::Failed, format!("re-enum failed: {}", e));
+    }
+
+    // 3. 重枚举后 context 路径可能变化，重新查找并按新卡运营商重配 APN
+    match find_internet_context(conn).await {
+        Ok(path) => match auto_configure_apn(conn, &path).await {
+            Ok(msg) => match set_data_connection(conn, true).await {
+                Ok(()) => {
+                    state.record_success();
+                    (DataCheckOutcome::Healthy, format!("{}; re-activated after SIM change", msg))
+                }
+                Err(e) => {
+                    state.record_failure();
+                    (DataCheckOutcome::Failed, format!("{}; activate failed: {}", msg, e))
+                }
+            },
+            Err(e) => (
+                DataCheckOutcome::Waiting,
+                format!("APN reconfig unavailable after SIM change: {}", e),
+            ),
+        },
+        Err(e) => (
+            DataCheckOutcome::Waiting,
+            format!("no internet context after SIM change: {}", e),
+        ),
+    }
+}
+
+/// 让 modem 下线再上线，强制重新枚举 SIM 并清除 stuck PDP 承载。
+///
+/// 所有等待都在锁外进行；`Modem.Online` 的写操作为单次 D-Bus 调用，无需额外加锁。
+async fn reenumerate_modem(conn: &Connection) -> Result<(), String> {
+    let modem = ModemProxy::new(conn)
+        .await
+        .map_err(|e| format!("Modem proxy unavailable: {}", e))?;
+
+    // 下线，强制 modem 丢弃旧 SIM 的注册与承载
+    let _ = modem
+        .set_property("Online", zbus::zvariant::Value::Bool(false))
+        .await;
+
+    // 短暂稳定后再上线
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    modem
+        .set_property("Online", zbus::zvariant::Value::Bool(true))
+        .await
+        .map_err(|e| format!("failed to bring modem online: {}", e))?;
+
+    // 等待新卡就绪与网络注册（等待在锁外，不阻塞其它 API）
+    wait_for_sim_ready(conn, SIM_READY_TIMEOUT).await?;
+    wait_for_network_registered(conn, NETWORK_REGISTER_TIMEOUT).await?;
+
+    Ok(())
+}
+
 /// 检查并恢复数据连接
 ///
 /// 这个函数被 watchdog 调用，检查数据连接状态并在需要时恢复。
@@ -879,9 +956,12 @@ async fn check_and_restore_data_connection(
         state.last_iccid = iccid;
     }
     if sim_changed {
-        info!("Watchdog: SIM changed, APN will be reconfigured");
-        // 换卡后重新开始计数，否则旧的失败计数会让新卡一直得不到重试机会
-        state.record_success();
+        info!("Watchdog: SIM changed, performing full re-enumeration + APN reconfig");
+        // 物理换卡（热插拔）绕过了 switch_sim_slot 的 Modem.Online 重枚举，
+        // 被硬拔卡留下的 stuck PDP 承载会卡死在 RIL/运营侧，只发 Active=true 清不掉，
+        // 只能靠整机重启。这里复用重枚举流程：拆承载 → Online 重枚举 → 等就绪/注册 →
+        // 重配 APN → 激活，让热插拔也能自愈，不再依赖重启。
+        return recover_after_sim_change(conn, state).await;
     }
     
     // 3. 查找 internet context
