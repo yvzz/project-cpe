@@ -15,6 +15,8 @@ frontend/package-lock.json
 
 # 构建产物
 *.bin
+# OTA 签名私钥（绝不可入库；公钥已编译进固件 ota.rs）
+scripts/ota_sign_key.bin
 
 # Release 包
 release/

@@ -1131,6 +1131,10 @@ pub struct OtaMeta {
     /// 最低兼容版本（可选，用于阻止降级）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_version: Option<String>,
+    /// Ed25519 签名（base64）：对 `version|arch|binary_md5` 的规范串签名。
+    /// 验签公钥编译进固件（OTA_PUBKEY）。此字段为必选项，缺失或验签失败则拒绝安装。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 /// OTA 更新状态响应
