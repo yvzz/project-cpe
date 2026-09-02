@@ -315,6 +315,7 @@ pub async fn get_data_usage(State(state): State<AppState>) -> impl IntoResponse 
     let cfg = state.config_manager.get_data_connection_config();
     let limit_bytes = (cfg.limit_gb * crate::usage::BYTES_PER_GB as f64) as u64;
     let blocked = state.data_usage_tracker.is_blocked();
+    let last_reset_date = state.data_usage_tracker.get_last_reset_date();
 
     let resp = DataUsageResponse {
         total_rx_bytes: rx,
@@ -324,6 +325,8 @@ pub async fn get_data_usage(State(state): State<AppState>) -> impl IntoResponse 
         limit_bytes,
         auto_disable: cfg.auto_disable,
         blocked,
+        reset_day: cfg.reset_day,
+        last_reset_date,
     };
 
     (
@@ -344,7 +347,7 @@ pub async fn get_data_config(State(state): State<AppState>) -> impl IntoResponse
 /// POST /api/data/config - 设置数据连接配置（流量限额）
 pub async fn set_data_config(
     State(state): State<AppState>,
-    Json(payload): Json<DataConnectionConfig>,
+    Json(mut payload): Json<DataConnectionConfig>,
 ) -> impl IntoResponse {
     if payload.limit_gb < 0.0 {
         return (
@@ -353,6 +356,10 @@ pub async fn set_data_config(
                 "limit_gb 不能为负数".to_string(),
             )),
         );
+    }
+    // 钳制清零日到 1-31（0 或越界归 1），与落库归一化保持一致
+    if payload.reset_day == 0 || payload.reset_day > 31 {
+        payload.reset_day = 1;
     }
 
     // 若关闭了限额或把限额调高到当前用量之上，解除阻断（允许重新开启数据）

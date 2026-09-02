@@ -1086,8 +1086,12 @@ async fn enforce_data_limit(
     config: &ConfigManager,
     usage: &DataUsageTracker,
 ) {
-    let (rx, tx) = usage.sample();
     let cfg = config.get_data_connection_config();
+
+    // 按设定的"重置日"自动清零（与是否设置限额无关，先清零再采样）
+    usage.maybe_auto_reset(cfg.reset_day);
+
+    let (rx, tx) = usage.sample();
 
     if cfg.limit_gb <= 0.0 {
         usage.set_blocked(false);

@@ -21,6 +21,7 @@ import {
   RadioGroup,
   FormControl,
   FormLabel,
+  FormHelperText,
   Button,
   Divider,
   Alert,
@@ -272,7 +273,7 @@ export default function ConfigurationPage() {
   const [expanded, setExpanded] = useState<string | false>('dataConnection')
   
   const [dataStatus, setDataStatus] = useState(false)
-  const [dataConfig, setDataConfig] = useState<DataConnectionConfig>({ limit_gb: 0, auto_disable: false })
+  const [dataConfig, setDataConfig] = useState<DataConnectionConfig>({ limit_gb: 0, auto_disable: false, reset_day: 1 })
   const [dataUsage, setDataUsage] = useState<DataUsageResponse | null>(null)
   const [dataConfigSaving, setDataConfigSaving] = useState(false)
   const [usbMode, setUsbMode] = useState<UsbModeResponse | null>(null)
@@ -773,6 +774,10 @@ export default function ConfigurationPage() {
               已用：{((dataUsage?.total_bytes ?? 0) / 1e9).toFixed(2)} GB
               {dataConfig.limit_gb > 0 && ` / 限额 ${dataConfig.limit_gb} GB`}
             </Typography>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+              每月 {dataUsage?.reset_day ?? dataConfig.reset_day} 号自动清零
+              {dataUsage?.last_reset_date ? ` · 上次清零：${dataUsage.last_reset_date}` : ' · 尚未自动清零'}
+            </Typography>
             {dataConfig.limit_gb > 0 && (
               <Box sx={{ mt: 1 }}>
                 <LinearProgress
@@ -815,6 +820,22 @@ export default function ConfigurationPage() {
               }
               label="到达限额后自动关闭数据连接"
             />
+
+            {/* 流量自动清零日 */}
+            <FormControl fullWidth size="small" sx={{ mt: 1 }}>
+              <Select
+                value={dataConfig.reset_day}
+                onChange={(e) => setDataConfig({ ...dataConfig, reset_day: Number(e.target.value) })}
+              >
+                {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                  <MenuItem key={d} value={d}>
+                    {d} 号{d === 1 ? '（每月 1 号清零，等同正常手机卡）' : ''}
+                  </MenuItem>
+                ))}
+              </Select>
+              <FormHelperText>流量自动清零日：到达该日期自动清零统计并开始新计费周期</FormHelperText>
+            </FormControl>
+
             <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
               <Button variant="contained" startIcon={<Save />} disabled={dataConfigSaving} onClick={saveDataConfig}>
                 {dataConfigSaving ? '保存中…' : '保存限额'}

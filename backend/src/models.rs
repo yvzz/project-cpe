@@ -154,6 +154,10 @@ pub struct DataUsageResponse {
     pub auto_disable: bool,
     /// 是否已因到达限额被阻断（数据连接已被强制关闭，手动开启会被拒绝）
     pub blocked: bool,
+    /// 流量自动清零日（每月几号，1-31）。1=每月 1 号清零（正常手机卡）
+    pub reset_day: u8,
+    /// 上次自动清零日期（本地时区 YYYY-MM-DD），None 表示从未自动清零
+    pub last_reset_date: Option<String>,
 }
 
 /// 漫游设置请求

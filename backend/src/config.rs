@@ -205,13 +205,20 @@ pub struct DataConnectionConfig {
     /// 到达限额后是否自动关闭数据连接
     #[serde(default)]
     pub auto_disable: bool,
+    /// 流量自动清零日（每月几号，1-31）。到达该日期自动清零统计并开始新计费周期；
+    /// 选 1 即每月 1 号清零（等同正常手机卡月底/月初清零）。非法值（0 或 >31）落库时归为 1。
+    #[serde(default = "default_reset_day")]
+    pub reset_day: u8,
 }
+
+fn default_reset_day() -> u8 { 1 }
 
 impl Default for DataConnectionConfig {
     fn default() -> Self {
         Self {
             limit_gb: 0.0,
             auto_disable: false,
+            reset_day: 1,
         }
     }
 }
@@ -329,7 +336,11 @@ impl ConfigManager {
     }
 
     /// 设置数据连接配置（流量限额）
-    pub fn set_data_connection_config(&self, cfg: DataConnectionConfig) -> Result<(), String> {
+    pub fn set_data_connection_config(&self, mut cfg: DataConnectionConfig) -> Result<(), String> {
+        // 归一化清零日：0 或 >31 视为 1（每月 1 号清零，等同正常手机卡）
+        if cfg.reset_day == 0 || cfg.reset_day > 31 {
+            cfg.reset_day = 1;
+        }
         {
             let mut config = self.config.write().unwrap();
             config.data_connection = cfg;

@@ -149,6 +149,7 @@ export interface DataConnectionRequest {
 export interface DataConnectionConfig {
   limit_gb: number      // 流量限额（GB），0 表示不限制
   auto_disable: boolean // 到达限额后自动关闭数据连接
+  reset_day: number     // 流量自动清零日（每月几号，1-31）；1=每月1号清零（正常手机卡）
 }
 
 // 数据流量使用统计响应
@@ -160,6 +161,8 @@ export interface DataUsageResponse {
   limit_bytes: number
   auto_disable: boolean
   blocked: boolean       // 是否已因到达限额被阻断
+  reset_day: number     // 流量自动清零日（1-31）
+  last_reset_date: string | null // 上次自动清零日期 YYYY-MM-DD
 }
 
 // 飞行模式请求
