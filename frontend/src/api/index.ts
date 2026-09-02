@@ -22,6 +22,8 @@ import type {
   AtCommandRequest,
   SetUsbModeRequest,
   DataConnectionRequest,
+  DataConnectionConfig,
+  DataUsageResponse,
   SystemStatsResponse,
   CpuInfo,
   AirplaneModeRequest,
@@ -143,6 +145,31 @@ class UDX710API {
     return request<ApiResponse<DataConnectionStatus>>('/data', {
       method: 'POST',
       body: JSON.stringify(body),
+    })
+  }
+
+  // 获取流量使用统计
+  async getDataUsage() {
+    return request<ApiResponse<DataUsageResponse>>('/data/usage')
+  }
+
+  // 获取数据连接配置（流量限额）
+  async getDataConfig() {
+    return request<ApiResponse<DataConnectionConfig>>('/data/config')
+  }
+
+  // 设置数据连接配置（流量限额）
+  async setDataConfig(config: DataConnectionConfig) {
+    return request<ApiResponse<DataConnectionConfig>>('/data/config', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    })
+  }
+
+  // 重置流量统计
+  async resetDataUsage() {
+    return request<ApiResponse<null>>('/data/usage/reset', {
+      method: 'POST',
     })
   }
 

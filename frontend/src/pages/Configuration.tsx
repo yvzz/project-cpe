@@ -58,7 +58,7 @@ import {
 } from '@mui/icons-material'
 import { api } from '../api'
 import ErrorSnackbar from '../components/ErrorSnackbar'
-import type { UsbModeResponse, AirplaneModeResponse, NotificationChannel, ChannelType, DingtalkConfig, FeishuConfig, WecomConfig, EmailConfig, BarkConfig, ScheduledRebootConfig } from '../api/types'
+import type { UsbModeResponse, AirplaneModeResponse, NotificationChannel, ChannelType, DingtalkConfig, FeishuConfig, WecomConfig, EmailConfig, BarkConfig, ScheduledRebootConfig, DataConnectionConfig, DataUsageResponse } from '../api/types'
 import { DEFAULT_NOTIFICATION_CHANNEL } from '../api/types'
 
 // ========== 通知渠道辅助组件 ==========
@@ -272,6 +272,9 @@ export default function ConfigurationPage() {
   const [expanded, setExpanded] = useState<string | false>('dataConnection')
   
   const [dataStatus, setDataStatus] = useState(false)
+  const [dataConfig, setDataConfig] = useState<DataConnectionConfig>({ limit_gb: 0, auto_disable: false })
+  const [dataUsage, setDataUsage] = useState<DataUsageResponse | null>(null)
+  const [dataConfigSaving, setDataConfigSaving] = useState(false)
   const [usbMode, setUsbMode] = useState<UsbModeResponse | null>(null)
   const [selectedUsbMode, setSelectedUsbMode] = useState<number>(1)
   const [usbModePermanent, setUsbModePermanent] = useState<boolean>(false)
@@ -310,16 +313,20 @@ export default function ConfigurationPage() {
     setError(null)
     
     try {
-      const [dataRes, usbRes, airplaneModeRes, webhookRes, deviceNameRes, rebootConfigRes] = await Promise.all([
+      const [dataRes, usbRes, airplaneModeRes, webhookRes, deviceNameRes, rebootConfigRes, dataConfigRes, dataUsageRes] = await Promise.all([
         api.getDataStatus(),
         api.getUsbMode(),
         api.getAirplaneMode(),
         api.getWebhookConfig(),
         api.getDeviceName(),
         api.getScheduledReboot(),
+        api.getDataConfig(),
+        api.getDataUsage(),
       ])
-      
+
       if (dataRes.data) setDataStatus(dataRes.data.active)
+      if (dataConfigRes.data) setDataConfig(dataConfigRes.data)
+      if (dataUsageRes.data) setDataUsage(dataUsageRes.data)
       if (usbRes.data) {
         setUsbMode(usbRes.data)
         setSelectedUsbMode(usbRes.data.current_mode || 1)
@@ -390,6 +397,36 @@ export default function ConfigurationPage() {
 
   const handleAirplaneModeToggle = () => {
     void toggleAirplaneMode()
+  }
+
+  const saveDataConfig = async () => {
+    try {
+      setError(null)
+      setSuccess(null)
+      setDataConfigSaving(true)
+      const res = await api.setDataConfig(dataConfig)
+      if (res.data) {
+        setDataConfig(res.data)
+        setSuccess('流量限额设置已保存')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDataConfigSaving(false)
+    }
+  }
+
+  const resetDataUsage = async () => {
+    try {
+      setError(null)
+      setSuccess(null)
+      await api.resetDataUsage()
+      const res = await api.getDataUsage()
+      if (res.data) setDataUsage(res.data)
+      setSuccess('流量统计已重置')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
   }
 
   const toggleAirplaneMode = async () => {
@@ -727,6 +764,65 @@ export default function ConfigurationPage() {
             <Alert severity="info" sx={{ mt: 2 }}>
               提示：禁用数据连接将中断所有使用移动网络的应用和服务
             </Alert>
+
+            <Divider sx={{ my: 2 }} />
+
+            {/* 流量统计 */}
+            <Typography variant="subtitle2" fontWeight={600} gutterBottom>流量统计</Typography>
+            <Typography variant="body2" color="text.secondary">
+              已用：{((dataUsage?.total_bytes ?? 0) / 1e9).toFixed(2)} GB
+              {dataConfig.limit_gb > 0 && ` / 限额 ${dataConfig.limit_gb} GB`}
+            </Typography>
+            {dataConfig.limit_gb > 0 && (
+              <Box sx={{ mt: 1 }}>
+                <LinearProgress
+                  variant="determinate"
+                  color={dataUsage?.blocked ? 'error' : 'primary'}
+                  value={Math.min(100, ((dataUsage?.total_bytes ?? 0) / (dataConfig.limit_gb * 1e9)) * 100)}
+                />
+              </Box>
+            )}
+            {dataUsage?.blocked && (
+              <Alert severity="warning" sx={{ mt: 1 }}>
+                已达流量限额，数据连接已被自动关闭。调高限额或重置统计后可重新开启。
+              </Alert>
+            )}
+
+            <Divider sx={{ my: 2 }} />
+
+            {/* 流量限额设置 */}
+            <Typography variant="subtitle2" fontWeight={600} gutterBottom>流量限额</Typography>
+            <TextField
+              label="流量限额 (GB)"
+              type="number"
+              size="small"
+              fullWidth
+              value={dataConfig.limit_gb}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                setDataConfig({ ...dataConfig, limit_gb: Math.max(0, Number(e.target.value) || 0) })
+              }
+              InputProps={{ inputProps: { min: 0, step: 0.1 } }}
+              helperText="0 表示不限制"
+              sx={{ mb: 1 }}
+            />
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={dataConfig.auto_disable}
+                  onChange={(e) => setDataConfig({ ...dataConfig, auto_disable: e.target.checked })}
+                  color="primary"
+                />
+              }
+              label="到达限额后自动关闭数据连接"
+            />
+            <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
+              <Button variant="contained" startIcon={<Save />} disabled={dataConfigSaving} onClick={saveDataConfig}>
+                {dataConfigSaving ? '保存中…' : '保存限额'}
+              </Button>
+              <Button variant="outlined" color="warning" onClick={resetDataUsage}>
+                重置统计
+              </Button>
+            </Box>
           </AccordionDetails>
         </Accordion>
 

@@ -19,6 +19,7 @@ use zbus::Connection;
 use crate::config::ConfigManager;
 use crate::db::Database;
 use crate::scheduled_reboot::ScheduledRebootManager;
+use crate::usage::DataUsageTracker;
 use crate::webhook::WebhookSender;
 
 /// 应用全局状态
@@ -36,6 +37,8 @@ pub struct AppState {
     pub webhook_sender: Arc<WebhookSender>,
     /// 定时重启调度器
     pub scheduled_reboot_manager: Arc<ScheduledRebootManager>,
+    /// 数据流量累计追踪器（流量限额功能）
+    pub data_usage_tracker: Arc<DataUsageTracker>,
 }
 
 impl AppState {
@@ -46,6 +49,7 @@ impl AppState {
         config_manager: Arc<ConfigManager>,
         webhook_sender: Arc<WebhookSender>,
         scheduled_reboot_manager: Arc<ScheduledRebootManager>,
+        data_usage_tracker: Arc<DataUsageTracker>,
     ) -> Self {
         Self {
             dbus_conn,
@@ -53,6 +57,7 @@ impl AppState {
             config_manager,
             webhook_sender,
             scheduled_reboot_manager,
+            data_usage_tracker,
         }
     }
 }
@@ -87,6 +92,12 @@ impl FromRef<AppState> for Arc<WebhookSender> {
 impl FromRef<AppState> for Arc<ScheduledRebootManager> {
     fn from_ref(state: &AppState) -> Self {
         state.scheduled_reboot_manager.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<DataUsageTracker> {
+    fn from_ref(state: &AppState) -> Self {
+        state.data_usage_tracker.clone()
     }
 }
 

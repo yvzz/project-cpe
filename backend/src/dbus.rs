@@ -17,11 +17,13 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 use zbus::{proxy, zvariant::OwnedValue, Connection, Proxy};
 
+use crate::config::ConfigManager;
 use crate::models::{
     AirplaneModeResponse, ApnContext, DeviceInfoResponse, NetworkInfoResponse, QosInfoResponse, RadioMode,
     RadioModeResponse, ServingCell, SimInfoResponse,
 };
 use crate::serial::with_serial;
+use crate::usage::DataUsageTracker;
 
 /// ofono NetworkMonitor 代理接口
 #[proxy(
@@ -920,7 +922,16 @@ async fn reenumerate_modem(conn: &Connection) -> Result<(), String> {
 async fn check_and_restore_data_connection(
     conn: &Connection,
     state: &mut WatchdogState,
+    usage: &DataUsageTracker,
 ) -> (DataCheckOutcome, String) {
+    // 0. 流量已达限额且开启自动关闭 → 不自动恢复，避免刚关又被拉起
+    if usage.is_blocked() {
+        return (
+            DataCheckOutcome::Waiting,
+            "Data connection blocked by data limit; not auto-activating".to_string(),
+        );
+    }
+
     // 1. 检查网络注册状态
     let net_status = match NetworkRegistrationProxy::new(conn).await {
         Ok(net_proxy) => {
@@ -1065,6 +1076,44 @@ async fn check_and_restore_data_connection(
     (DataCheckOutcome::Healthy, format!("Connected (APN: {})", apn))
 }
 
+/// 采样流量并强制生效流量限额
+///
+/// - 限额为 0（未设置）时不限制；
+/// - 限额 > 0 且 `auto_disable` 开启，且累计流量 >= 限额时：强制关闭数据连接并置阻断标志；
+/// - 否则清除阻断标志（允许手动开启 / 自动恢复）。
+async fn enforce_data_limit(
+    conn: &Connection,
+    config: &ConfigManager,
+    usage: &DataUsageTracker,
+) {
+    let (rx, tx) = usage.sample();
+    let cfg = config.get_data_connection_config();
+
+    if cfg.limit_gb <= 0.0 {
+        usage.set_blocked(false);
+        return;
+    }
+
+    let limit_bytes = (cfg.limit_gb * crate::usage::BYTES_PER_GB as f64) as u64;
+    let total = rx.saturating_add(tx);
+
+    if cfg.auto_disable && total >= limit_bytes {
+        // 强制关闭并标记阻断（阻断后 check_and_restore_data_connection 不会再自动拉起）
+        if let Ok(true) = get_data_connection_status(conn).await {
+            let _ = set_data_connection(conn, false).await;
+        }
+        usage.set_blocked(true);
+        info!(
+            used_bytes = total,
+            used_gb = total as f64 / crate::usage::BYTES_PER_GB as f64,
+            limit_gb = cfg.limit_gb,
+            "流量已达限额，自动关闭数据连接"
+        );
+    } else {
+        usage.set_blocked(false);
+    }
+}
+
 /// 数据连接 Watchdog - 后台轮询监控并自动恢复
 ///
 /// 持续监控数据连接状态，在断开时自动尝试恢复。
@@ -1077,16 +1126,23 @@ async fn check_and_restore_data_connection(
 /// # Arguments
 /// * `conn` - D-Bus 连接
 /// * `interval_secs` - 基础轮询间隔（秒），仅用于 iptables 检查和退避计时精度
-pub async fn data_connection_watchdog(conn: std::sync::Arc<Connection>, interval_secs: u64) {
+/// * `config` - 配置管理器（读取流量限额设置）
+/// * `usage` - 数据流量追踪器（采样累计 + 限额阻断状态）
+pub async fn data_connection_watchdog(
+    conn: std::sync::Arc<Connection>,
+    interval_secs: u64,
+    config: std::sync::Arc<ConfigManager>,
+    usage: std::sync::Arc<DataUsageTracker>,
+) {
     use crate::iptables::{flush_iptables, get_iptables_rule_count};
-    
+
     let mut last_data_log = String::new();
     let mut last_iptables_action = false; // 上次是否清空了 iptables
     let mut state = WatchdogState::new();
-    
+
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
-        
+
         // 1. 检查并清空 iptables 规则
         match get_iptables_rule_count().await {
             Ok(count) => {
@@ -1115,15 +1171,19 @@ pub async fn data_connection_watchdog(conn: std::sync::Arc<Connection>, interval
                 warn!(error = %e, "Watchdog: iptables check failed");
             }
         }
-        
+
+        // 1.5 采样流量并强制生效流量限额（每轮都做，即便下面因退避跳过恢复，
+        //     这样累计值不会在退避窗口内漏计）
+        enforce_data_limit(&conn, &config, &usage).await;
+
         // 2. 检查并恢复数据连接
         //    按退避节奏调度：连续失败后逐步拉长尝试间隔，
         //    未到下次尝试时间就跳过本轮，只保留 iptables 检查的原有节奏
         if Instant::now() < state.next_attempt_at {
             continue;
         }
-        
-        let (outcome, result) = check_and_restore_data_connection(&conn, &mut state).await;
+
+        let (outcome, result) = check_and_restore_data_connection(&conn, &mut state, &usage).await;
         
         match outcome {
             DataCheckOutcome::Failed => {

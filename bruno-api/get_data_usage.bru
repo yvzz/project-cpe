@@ -1,0 +1,17 @@
+meta {
+  name: get_data_usage
+  type: http
+  seq: 10
+}
+
+get {
+  url: http://192.168.66.1:3000/api/data/usage
+  body: none
+  auth: inherit
+}
+
+settings {
+  encodeUrl: true
+}
+
+

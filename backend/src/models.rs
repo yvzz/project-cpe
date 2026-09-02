@@ -137,6 +137,25 @@ pub struct DataConnectionResponse {
     pub active: bool,
 }
 
+/// 数据流量使用统计响应
+#[derive(Debug, Serialize, Default)]
+pub struct DataUsageResponse {
+    /// 累计接收字节数
+    pub total_rx_bytes: u64,
+    /// 累计发送字节数
+    pub total_tx_bytes: u64,
+    /// 累计总字节数（接收 + 发送）
+    pub total_bytes: u64,
+    /// 流量限额（GB），0 表示不限制
+    pub limit_gb: f64,
+    /// 限额字节数（limit_gb * 10^9），0 表示不限制
+    pub limit_bytes: u64,
+    /// 到达限额后是否自动关闭数据连接
+    pub auto_disable: bool,
+    /// 是否已因到达限额被阻断（数据连接已被强制关闭，手动开启会被拒绝）
+    pub blocked: bool,
+}
+
 /// 漫游设置请求
 #[derive(Debug, Deserialize)]
 pub struct RoamingRequest {

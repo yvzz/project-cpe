@@ -196,6 +196,26 @@ impl NotificationChannel {
     }
 }
 
+/// 数据连接配置（流量限额）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataConnectionConfig {
+    /// 流量限额（GB）。0 表示不限制。
+    #[serde(default)]
+    pub limit_gb: f64,
+    /// 到达限额后是否自动关闭数据连接
+    #[serde(default)]
+    pub auto_disable: bool,
+}
+
+impl Default for DataConnectionConfig {
+    fn default() -> Self {
+        Self {
+            limit_gb: 0.0,
+            auto_disable: false,
+        }
+    }
+}
+
 /// 应用配置
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
@@ -207,6 +227,9 @@ pub struct AppConfig {
     /// 定时重启配置
     #[serde(default)]
     pub scheduled_reboot: ScheduledRebootConfig,
+    /// 数据连接配置（流量限额）
+    #[serde(default)]
+    pub data_connection: DataConnectionConfig,
 }
 
 /// 配置管理器
@@ -296,6 +319,20 @@ impl ConfigManager {
         {
             let mut config = self.config.write().unwrap();
             config.scheduled_reboot = cfg;
+        }
+        self.save()
+    }
+
+    /// 获取数据连接配置（流量限额）
+    pub fn get_data_connection_config(&self) -> DataConnectionConfig {
+        self.config.read().unwrap().data_connection.clone()
+    }
+
+    /// 设置数据连接配置（流量限额）
+    pub fn set_data_connection_config(&self, cfg: DataConnectionConfig) -> Result<(), String> {
+        {
+            let mut config = self.config.write().unwrap();
+            config.data_connection = cfg;
         }
         self.save()
     }

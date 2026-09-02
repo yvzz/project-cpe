@@ -145,6 +145,23 @@ export interface DataConnectionRequest {
   active: boolean
 }
 
+// 数据连接配置（流量限额）
+export interface DataConnectionConfig {
+  limit_gb: number      // 流量限额（GB），0 表示不限制
+  auto_disable: boolean // 到达限额后自动关闭数据连接
+}
+
+// 数据流量使用统计响应
+export interface DataUsageResponse {
+  total_rx_bytes: number
+  total_tx_bytes: number
+  total_bytes: number
+  limit_gb: number
+  limit_bytes: number
+  auto_disable: boolean
+  blocked: boolean       // 是否已因到达限额被阻断
+}
+
 // 飞行模式请求
 export interface AirplaneModeRequest {
   enabled: boolean

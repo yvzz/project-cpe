@@ -47,6 +47,7 @@ mod scheduled_reboot;
 mod serial;
 mod sms_listener;
 mod state;
+mod usage;
 mod usb_switch;
 mod utils;
 mod webhook;
@@ -58,6 +59,7 @@ use db::Database;
 use crate::db::cleanup_old_sms;
 use crate::db::cleanup_old_calls;
 use state::AppState;
+use crate::usage::DataUsageTracker;
 use webhook::WebhookSender;
 use scheduled_reboot::ScheduledRebootManager;
 
@@ -213,7 +215,14 @@ async fn main() -> Result<()> {
     // 初始化配置管理器
     let config_path = get_default_config_path();
     info!(path = ?config_path, "Loading config");
-    let config_manager = Arc::new(ConfigManager::new(config_path));
+    let config_manager = Arc::new(ConfigManager::new(config_path.clone()));
+
+    // 数据流量累计追踪器（持久化到 config 同目录下的 data_usage.json）
+    let usage_path = config_path
+        .parent()
+        .map(|p| p.join("data_usage.json"))
+        .unwrap_or_else(|| exe_dir.join("data_usage.json"));
+    let data_usage_tracker = Arc::new(DataUsageTracker::new(usage_path));
     
     // 初始化 Webhook 发送器
     let webhook_sender = Arc::new(WebhookSender::new(Arc::clone(&config_manager)));
@@ -274,10 +283,12 @@ async fn main() -> Result<()> {
     // 数据连接激活失败后会按 5s→15s→30s→60s→120s 指数退避，不会固定间隔重试
     {
         let conn_clone = Arc::clone(&dbus_conn);
+        let cfg_clone = Arc::clone(&config_manager);
+        let usage_clone = Arc::clone(&data_usage_tracker);
         tokio::spawn(async move {
             // 初始延迟 5 秒，等待系统稳定
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;            tracing::info!(interval = WATCHDOG_INTERVAL_SECS, "Watchdog started");
-            dbus::data_connection_watchdog(conn_clone, WATCHDOG_INTERVAL_SECS).await;
+            dbus::data_connection_watchdog(conn_clone, WATCHDOG_INTERVAL_SECS, cfg_clone, usage_clone).await;
         });
     }
 
@@ -294,6 +305,7 @@ async fn main() -> Result<()> {
         config_manager,
         webhook_sender,
         scheduled_reboot_manager,
+        data_usage_tracker,
     );
 
     // Build routes - 使用统一的 AppState
@@ -323,6 +335,9 @@ async fn main() -> Result<()> {
         .route("/api/qos", get(get_qos_info).options(options_handler))
         // ========== 数据连接接口 ==========
         .route("/api/data", get(get_data_status).post(set_data_status).options(options_handler))
+        .route("/api/data/config", get(get_data_config).post(set_data_config).options(options_handler))
+        .route("/api/data/usage", get(get_data_usage).options(options_handler))
+        .route("/api/data/usage/reset", post(reset_data_usage).options(options_handler))
         .route("/api/roaming", get(get_roaming_status_handler).post(set_roaming_status_handler).options(options_handler))
         .route("/api/airplane-mode", get(get_airplane_mode_handler).post(set_airplane_mode_handler).options(options_handler))
         // ========== 射频模式接口 ==========

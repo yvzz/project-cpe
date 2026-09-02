@@ -23,6 +23,7 @@ use std::sync::Arc;
 use zbus::Connection;
 
 use crate::{
+    config::DataConnectionConfig,
     dbus::{
         get_airplane_mode, get_all_apn_contexts, get_data_connection_status, get_device_info_data,
         get_network_info_data, get_qos_info_data, get_radio_mode, get_roaming_status, get_serving_cell_info,
@@ -31,6 +32,7 @@ use crate::{
     },
     iptables::flush_iptables,
     models::*,
+    state::AppState,
     usb_switch,
     utils::{
         bands_to_bitmask, bitmask_to_bands, build_splband_lte_command, build_splband_nr_command,
@@ -234,16 +236,28 @@ pub async fn get_device_info(State(conn): State<Arc<Connection>>) -> impl IntoRe
 /// 每次切换数据连接状态时，会自动清空 iptables 规则（flush），
 /// 以确保网络配置处于干净状态
 pub async fn set_data_status(
-    State(conn): State<Arc<Connection>>,
+    State(state): State<AppState>,
     Json(payload): Json<DataConnectionRequest>,
 ) -> impl IntoResponse {
+    // 若尝试开启数据连接，但已被流量限额阻断，拒绝（需先调高限额或重置统计）
+    if payload.active && state.data_usage_tracker.is_blocked() {
+        return (
+            StatusCode::OK,
+            Json(ApiResponse::<DataConnectionResponse>::error(
+                "已达到流量限额，数据连接已被自动关闭。请调高限额或重置流量统计后再开启。".to_string(),
+            )),
+        );
+    }
+
+    let conn = &state.dbus_conn;
+
     // 1. 先清空 iptables 规则
     if let Err(_e) = flush_iptables().await {
         // 清空规则失败不应阻止数据连接操作，静默处理
     }
 
     // 2. 设置数据连接状态
-    match set_data_connection(&conn, payload.active).await {
+    match set_data_connection(conn, payload.active).await {
         Ok(_) => {
             
             (
@@ -293,6 +307,92 @@ pub async fn get_data_status(State(conn): State<Arc<Connection>>) -> impl IntoRe
             ))),
         ),
     }
+}
+
+/// GET /api/data/usage - 获取流量使用统计与限额状态
+pub async fn get_data_usage(State(state): State<AppState>) -> impl IntoResponse {
+    let (rx, tx) = state.data_usage_tracker.get_usage();
+    let cfg = state.config_manager.get_data_connection_config();
+    let limit_bytes = (cfg.limit_gb * crate::usage::BYTES_PER_GB as f64) as u64;
+    let blocked = state.data_usage_tracker.is_blocked();
+
+    let resp = DataUsageResponse {
+        total_rx_bytes: rx,
+        total_tx_bytes: tx,
+        total_bytes: rx.saturating_add(tx),
+        limit_gb: cfg.limit_gb,
+        limit_bytes,
+        auto_disable: cfg.auto_disable,
+        blocked,
+    };
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse::success_with_message("Success", resp)),
+    )
+}
+
+/// GET /api/data/config - 获取数据连接配置（流量限额）
+pub async fn get_data_config(State(state): State<AppState>) -> impl IntoResponse {
+    let cfg = state.config_manager.get_data_connection_config();
+    (
+        StatusCode::OK,
+        Json(ApiResponse::success_with_message("Success", cfg)),
+    )
+}
+
+/// POST /api/data/config - 设置数据连接配置（流量限额）
+pub async fn set_data_config(
+    State(state): State<AppState>,
+    Json(payload): Json<DataConnectionConfig>,
+) -> impl IntoResponse {
+    if payload.limit_gb < 0.0 {
+        return (
+            StatusCode::OK,
+            Json(ApiResponse::<DataConnectionConfig>::error(
+                "limit_gb 不能为负数".to_string(),
+            )),
+        );
+    }
+
+    // 若关闭了限额或把限额调高到当前用量之上，解除阻断（允许重新开启数据）
+    let (rx, tx) = state.data_usage_tracker.get_usage();
+    let limit_bytes = (payload.limit_gb * crate::usage::BYTES_PER_GB as f64) as u64;
+    let should_unblock = payload.limit_gb <= 0.0
+        || !payload.auto_disable
+        || (rx.saturating_add(tx)) < limit_bytes;
+    if should_unblock {
+        state.data_usage_tracker.set_blocked(false);
+    }
+
+    match state.config_manager.set_data_connection_config(payload) {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(ApiResponse::success_with_message(
+                "Data connection config updated",
+                state.config_manager.get_data_connection_config(),
+            )),
+        ),
+        Err(e) => (
+            StatusCode::OK,
+            Json(ApiResponse::<DataConnectionConfig>::error(format!(
+                "Failed to save config: {}",
+                e
+            ))),
+        ),
+    }
+}
+
+/// POST /api/data/usage/reset - 清零流量统计并解除限额阻断
+pub async fn reset_data_usage(State(state): State<AppState>) -> impl IntoResponse {
+    state.data_usage_tracker.reset();
+    (
+        StatusCode::OK,
+        Json(ApiResponse::<()>::success_with_message(
+            "Data usage counter reset",
+            (),
+        )),
+    )
 }
 
 /// GET /api/roaming - Get roaming status
