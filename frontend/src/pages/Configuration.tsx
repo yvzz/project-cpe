@@ -837,10 +837,10 @@ export default function ConfigurationPage() {
             </FormControl>
 
             <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
-              <Button variant="contained" startIcon={<Save />} disabled={dataConfigSaving} onClick={saveDataConfig}>
+              <Button variant="contained" startIcon={<Save />} disabled={dataConfigSaving} onClick={() => void saveDataConfig()}>
                 {dataConfigSaving ? '保存中…' : '保存限额'}
               </Button>
-              <Button variant="outlined" color="warning" onClick={resetDataUsage}>
+              <Button variant="outlined" color="warning" onClick={() => void resetDataUsage()}>
                 重置统计
               </Button>
             </Box>
