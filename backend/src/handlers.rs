@@ -2017,7 +2017,7 @@ pub async fn send_sms_handler(
     match crate::dbus::send_sms(&conn, &req.phone_number, &req.content).await {
         Ok(message_path) => {
             // 存储到数据库
-            match db.insert_sms("outgoing", &req.phone_number, &req.content, "sent", None) {
+            match db.insert_sms("outgoing", &req.phone_number, &req.content, "sent", None).await {
                 Ok(id) => (
                     StatusCode::OK,
                     Json(ApiResponse::success_with_message(
@@ -2051,7 +2051,7 @@ pub async fn get_sms_list_handler(
     State(db): State<Arc<Database>>,
     axum::extract::Query(req): axum::extract::Query<SmsListRequest>,
 ) -> (StatusCode, Json<ApiResponse<Vec<crate::db::SmsMessage>>>) {
-    match db.get_sms_messages(req.limit, req.offset) {
+    match db.get_sms_messages(req.limit, req.offset).await {
         Ok(messages) => (
             StatusCode::OK,
             Json(ApiResponse::success_with_message(
@@ -2071,7 +2071,7 @@ pub async fn get_sms_conversation_handler(
     State(db): State<Arc<Database>>,
     axum::extract::Query(req): axum::extract::Query<SmsConversationRequest>,
 ) -> (StatusCode, Json<ApiResponse<Vec<crate::db::SmsMessage>>>) {
-    match db.get_sms_conversation(&req.phone_number, req.limit) {
+    match db.get_sms_conversation(&req.phone_number, req.limit).await {
         Ok(messages) => (
             StatusCode::OK,
             Json(ApiResponse::success_with_message(
@@ -2090,7 +2090,7 @@ pub async fn get_sms_conversation_handler(
 pub async fn get_sms_stats_handler(
     State(db): State<Arc<Database>>,
 ) -> (StatusCode, Json<ApiResponse<crate::db::SmsStats>>) {
-    match db.get_sms_stats() {
+    match db.get_sms_stats().await {
         Ok(stats) => (
             StatusCode::OK,
             Json(ApiResponse::success_with_message("Success", stats)),
@@ -2116,7 +2116,7 @@ impl Default for crate::db::SmsStats {
 pub async fn clear_sms_handler(
     State(db): State<Arc<Database>>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-    match db.clear_all_sms() {
+    match db.clear_all_sms().await {
         Ok(_) => (
             StatusCode::OK,
             Json(ApiResponse::success_with_message("All messages cleared", json!({}))),
@@ -2604,9 +2604,9 @@ pub async fn get_call_history_handler(
     let limit = if params.limit > 0 { params.limit } else { 50 };
     let offset = if params.offset >= 0 { params.offset } else { 0 };
     
-    match db.get_call_history(limit, offset) {
+    match db.get_call_history(limit, offset).await {
         Ok(records) => {
-            let stats = db.get_call_stats().unwrap_or_default();
+            let stats = db.get_call_stats().await.unwrap_or_default();
             (
                 StatusCode::OK,
                 Json(ApiResponse::success_with_message(
@@ -2627,7 +2627,7 @@ pub async fn delete_call_history_handler(
     State(db): State<Arc<Database>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-    match db.delete_call(id) {
+    match db.delete_call(id).await {
         Ok(_) => (
             StatusCode::OK,
             Json(ApiResponse::success_with_message("Call record deleted", json!({}))),
@@ -2643,7 +2643,7 @@ pub async fn delete_call_history_handler(
 pub async fn clear_call_history_handler(
     State(db): State<Arc<Database>>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-    match db.clear_all_calls() {
+    match db.clear_all_calls().await {
         Ok(_) => (
             StatusCode::OK,
             Json(ApiResponse::success_with_message("All call records cleared", json!({}))),

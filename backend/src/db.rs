@@ -16,7 +16,8 @@ use chrono::Utc;
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// 短信记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,7 +68,7 @@ pub struct Database {
 
 impl Database {
     /// 创建或打开数据库
-    pub fn new(db_path: PathBuf) -> Result<Self> {
+    pub async fn new(db_path: PathBuf) -> Result<Self> {
         let conn = Connection::open(db_path)?;
         
         // 创建短信表（如果不存在）
@@ -130,7 +131,7 @@ impl Database {
     // ==================== 短信相关方法 ====================
     
     /// 插入新短信
-    pub fn insert_sms(
+    pub async fn insert_sms(
         &self,
         direction: &str,
         phone_number: &str,
@@ -138,7 +139,7 @@ impl Database {
         status: &str,
         pdu: Option<&str>,
     ) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().await;
         let timestamp = Utc::now().to_rfc3339();
         
         conn.execute(
@@ -152,8 +153,8 @@ impl Database {
     
     /// 更新短信状态
     #[allow(dead_code)]
-    pub fn update_sms_status(&self, id: i64, status: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+    pub async fn update_sms_status(&self, id: i64, status: &str) -> Result<()> {
+        let conn = self.conn.lock().await;
         conn.execute(
             "UPDATE sms_messages SET status = ?1 WHERE id = ?2",
             params![status, id],
@@ -162,8 +163,8 @@ impl Database {
     }
     
     /// 获取所有短信（分页）
-    pub fn get_sms_messages(&self, limit: i64, offset: i64) -> Result<Vec<SmsMessage>> {
-        let conn = self.conn.lock().unwrap();
+    pub async fn get_sms_messages(&self, limit: i64, offset: i64) -> Result<Vec<SmsMessage>> {
+        let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT id, direction, phone_number, content, timestamp, status, pdu
              FROM sms_messages
@@ -192,8 +193,8 @@ impl Database {
     }
     
     /// 获取与特定号码的对话历史
-    pub fn get_sms_conversation(&self, phone_number: &str, limit: i64) -> Result<Vec<SmsMessage>> {
-        let conn = self.conn.lock().unwrap();
+    pub async fn get_sms_conversation(&self, phone_number: &str, limit: i64) -> Result<Vec<SmsMessage>> {
+        let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT id, direction, phone_number, content, timestamp, status, pdu
              FROM sms_messages
@@ -223,8 +224,8 @@ impl Database {
     }
     
     /// 获取短信统计
-    pub fn get_sms_stats(&self) -> Result<SmsStats> {
-        let conn = self.conn.lock().unwrap();
+    pub async fn get_sms_stats(&self) -> Result<SmsStats> {
+        let conn = self.conn.lock().await;
         
         let total: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sms_messages",
@@ -251,13 +252,31 @@ impl Database {
         })
     }
     
-    /// 删除旧短信（保留最近 N 条）
-    #[allow(dead_code)]
-    pub fn cleanup_old_sms(&self, keep_count: i64) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+    /// 删除旧短信（保留最近 N 条），防止 sms_messages 表无限增长撑爆分区。
+    ///
+    /// 注意：sms_messages 表里没有稳定的「物理顺序」列，这里用 ROWID 近似——
+    /// AUTOINCREMENT 主键的 ROWID 单调递增，等价于插入顺序，因此「保留最大 N 个 ROWID」
+    /// 与「保留最近 N 条」等价。
+    pub async fn cleanup_old_sms(&self, keep_count: i64) -> Result<usize> {
+        let conn = self.conn.lock().await;
         let deleted = conn.execute(
-            "DELETE FROM sms_messages WHERE id NOT IN (
-                SELECT id FROM sms_messages ORDER BY timestamp DESC LIMIT ?1
+            "DELETE FROM sms_messages WHERE rowid NOT IN (
+                SELECT rowid FROM sms_messages ORDER BY rowid DESC LIMIT ?1
+            )",
+            params![keep_count],
+        )?;
+        Ok(deleted)
+    }
+
+    /// 删除旧通话记录（保留最近 N 条），防止 call_history 表无限增长撑爆分区。
+    ///
+    /// call_history 原本完全没有自动清理入口，只有整表清空，长时间运行后分区写满会导致
+    /// 所有写（含配置落盘）失败。
+    pub async fn cleanup_old_calls(&self, keep_count: i64) -> Result<usize> {
+        let conn = self.conn.lock().await;
+        let deleted = conn.execute(
+            "DELETE FROM call_history WHERE rowid NOT IN (
+                SELECT rowid FROM call_history ORDER BY rowid DESC LIMIT ?1
             )",
             params![keep_count],
         )?;
@@ -265,8 +284,8 @@ impl Database {
     }
     
     /// 删除所有短信
-    pub fn clear_all_sms(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+    pub async fn clear_all_sms(&self) -> Result<()> {
+        let conn = self.conn.lock().await;
         conn.execute("DELETE FROM sms_messages", [])?;
         Ok(())
     }
@@ -274,13 +293,13 @@ impl Database {
     // ==================== 通话记录相关方法 ====================
     
     /// 插入新通话记录
-    pub fn insert_call(
+    pub async fn insert_call(
         &self,
         direction: &str,
         phone_number: &str,
         answered: bool,
     ) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().await;
         let start_time = Utc::now().to_rfc3339();
         
         conn.execute(
@@ -293,8 +312,8 @@ impl Database {
     }
     
     /// 更新通话记录（通话结束时调用）
-    pub fn update_call_end(&self, id: i64, duration: i64, answered: bool) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+    pub async fn update_call_end(&self, id: i64, duration: i64, answered: bool) -> Result<()> {
+        let conn = self.conn.lock().await;
         let end_time = Utc::now().to_rfc3339();
         
         conn.execute(
@@ -305,8 +324,8 @@ impl Database {
     }
     
     /// 标记通话为未接来电
-    pub fn mark_call_missed(&self, id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+    pub async fn mark_call_missed(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().await;
         let end_time = Utc::now().to_rfc3339();
         
         conn.execute(
@@ -317,8 +336,8 @@ impl Database {
     }
     
     /// 获取通话记录（分页）
-    pub fn get_call_history(&self, limit: i64, offset: i64) -> Result<Vec<CallRecord>> {
-        let conn = self.conn.lock().unwrap();
+    pub async fn get_call_history(&self, limit: i64, offset: i64) -> Result<Vec<CallRecord>> {
+        let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT id, direction, phone_number, duration, start_time, end_time, answered
              FROM call_history
@@ -348,8 +367,8 @@ impl Database {
     
     /// 获取与特定号码的通话记录
     #[allow(dead_code)]
-    pub fn get_call_history_by_number(&self, phone_number: &str, limit: i64) -> Result<Vec<CallRecord>> {
-        let conn = self.conn.lock().unwrap();
+    pub async fn get_call_history_by_number(&self, phone_number: &str, limit: i64) -> Result<Vec<CallRecord>> {
+        let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT id, direction, phone_number, duration, start_time, end_time, answered
              FROM call_history
@@ -379,8 +398,8 @@ impl Database {
     }
     
     /// 获取通话统计
-    pub fn get_call_stats(&self) -> Result<CallStats> {
-        let conn = self.conn.lock().unwrap();
+    pub async fn get_call_stats(&self) -> Result<CallStats> {
+        let conn = self.conn.lock().await;
         
         let total: i64 = conn.query_row(
             "SELECT COUNT(*) FROM call_history",
@@ -422,18 +441,29 @@ impl Database {
     }
     
     /// 删除单条通话记录
-    pub fn delete_call(&self, id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+    pub async fn delete_call(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().await;
         conn.execute("DELETE FROM call_history WHERE id = ?1", params![id])?;
         Ok(())
     }
     
     /// 删除所有通话记录
-    pub fn clear_all_calls(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+    pub async fn clear_all_calls(&self) -> Result<()> {
+        let conn = self.conn.lock().await;
         conn.execute("DELETE FROM call_history", [])?;
         Ok(())
     }
+}
+
+/// 包装层：把清理调用放进独立 async 块，确保锁 guard 在 `.await` 前已释放，
+/// 避免 guard 跨 await 导致外层 future 不是 `Send`（tokio::spawn 要求）。
+pub async fn cleanup_old_sms(db: &Database, keep_count: i64) -> Result<usize> {
+    db.cleanup_old_sms(keep_count).await
+}
+
+/// 同上，通话记录版本。
+pub async fn cleanup_old_calls(db: &Database, keep_count: i64) -> Result<usize> {
+    db.cleanup_old_calls(keep_count).await
 }
 
 

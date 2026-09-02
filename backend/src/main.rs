@@ -55,6 +55,8 @@ use config::{ConfigManager, get_default_config_path};
 use dbus::init_data_connection;
 use handlers::*;
 use db::Database;
+use crate::db::cleanup_old_sms;
+use crate::db::cleanup_old_calls;
 use state::AppState;
 use webhook::WebhookSender;
 use scheduled_reboot::ScheduledRebootManager;
@@ -78,6 +80,13 @@ fn get_www_dir() -> PathBuf {
 /// 仅决定 iptables 检查节奏和退避计时的粒度；
 /// 激活失败的实际重试间隔由 dbus 模块内的指数退避决定。
 const WATCHDOG_INTERVAL_SECS: u64 = 5;
+
+/// 数据库保留条数：短信表最多保留最近这么多条，超出由维护任务清理
+const DB_RETENTION_SMS: i64 = 2000;
+/// 数据库保留条数：通话记录表最多保留最近这么多条
+const DB_RETENTION_CALLS: i64 = 2000;
+/// 数据库维护任务执行间隔（24 小时）
+const DB_CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// SPA fallback handler - 对于所有前端路由返回 index.html
 async fn spa_fallback(uri: Uri) -> Response {
@@ -173,8 +182,34 @@ async fn main() -> Result<()> {
         .expect("Failed to get executable directory")
         .to_path_buf();
     let db_path = exe_dir.join("data.db");
-    let app_db = Arc::new(Database::new(db_path)?);
-    
+    let app_db = Arc::new(Database::new(db_path).await?);
+
+    // 启动数据库维护任务：定期清理短信/通话记录，避免 data.db 无限增长撑爆分区
+    {
+        let db_clone = Arc::clone(&app_db);
+        tokio::spawn(async move {
+            // 启动时先清理一次，回收历史残留
+            let _ = db_clone.cleanup_old_sms(DB_RETENTION_SMS).await;
+            let _ = db_clone.cleanup_old_calls(DB_RETENTION_CALLS).await;
+            // 之后每 24 小时清理一次
+            let mut interval = tokio::time::interval(DB_CLEANUP_INTERVAL);
+            interval.tick().await; // 跳过首个立即触发的 tick（启动已清过）
+            loop {
+                interval.tick().await;
+                match cleanup_old_sms(&db_clone, DB_RETENTION_SMS).await {
+                    Ok(n) if n > 0 => info!(deleted = n, "DB maintenance: trimmed old SMS"),
+                    Ok(_) => {}
+                    Err(e) => warn!(error = %e, "DB maintenance: cleanup_old_sms failed"),
+                }
+                match cleanup_old_calls(&db_clone, DB_RETENTION_CALLS).await {
+                    Ok(n) if n > 0 => info!(deleted = n, "DB maintenance: trimmed old calls"),
+                    Ok(_) => {}
+                    Err(e) => warn!(error = %e, "DB maintenance: cleanup_old_calls failed"),
+                }
+            }
+        });
+    }
+
     // 初始化配置管理器
     let config_path = get_default_config_path();
     info!(path = ?config_path, "Loading config");
@@ -241,8 +276,7 @@ async fn main() -> Result<()> {
         let conn_clone = Arc::clone(&dbus_conn);
         tokio::spawn(async move {
             // 初始延迟 5 秒，等待系统稳定
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            tracing::info!(interval = WATCHDOG_INTERVAL_SECS, "Watchdog started");
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;            tracing::info!(interval = WATCHDOG_INTERVAL_SECS, "Watchdog started");
             dbus::data_connection_watchdog(conn_clone, WATCHDOG_INTERVAL_SECS).await;
         });
     }

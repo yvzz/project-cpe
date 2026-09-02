@@ -240,7 +240,7 @@ pub async fn start_sms_listener(conn: Connection, db: Arc<Database>, webhook: Ar
                         .unwrap_or_else(|| "Unknown".to_string());
                     
                     // Store to database
-                    if let Ok(id) = db.insert_sms("incoming", &sender, &content, "received", None) {
+                    if let Ok(id) = db.insert_sms("incoming", &sender, &content, "received", None).await {
                         // Forward to webhook
                         let sms = SmsMessage {
                             id,
@@ -333,7 +333,7 @@ pub async fn start_call_listener(conn: Connection, db: Arc<Database>, webhook: A
                         
                         // Insert call record into database
                         let answered = state == "active";
-                        if let Ok(db_id) = db.insert_call(direction, &phone_number, answered) {
+                        if let Ok(db_id) = db.insert_call(direction, &phone_number, answered).await {
                             let mut active_calls = ACTIVE_CALLS.lock().unwrap();
                             active_calls.insert(path_str, ActiveCall {
                                 db_id,
@@ -350,8 +350,15 @@ pub async fn start_call_listener(conn: Connection, db: Arc<Database>, webhook: A
                     if let Ok(path) = msg.body().deserialize::<zbus::zvariant::ObjectPath>() {
                         let path_str = path.to_string();
                         
-                        let mut active_calls = ACTIVE_CALLS.lock().unwrap();
-                        if let Some(call) = active_calls.remove(&path_str) {
+                        // Take ownership of the call record, then release the std Mutex guard
+                        // BEFORE any await point (db writes are now async). Holding a
+                        // std::sync::MutexGuard across an await makes the spawned future
+                        // non-Send and breaks tokio::spawn.
+                        let call = {
+                            let mut active_calls = ACTIVE_CALLS.lock().unwrap();
+                            active_calls.remove(&path_str)
+                        };
+                        if let Some(call) = call {
                             // Calculate duration
                             let duration = (Utc::now() - call.start_time).num_seconds();
                             let end_time = Utc::now().to_rfc3339();
@@ -359,10 +366,10 @@ pub async fn start_call_listener(conn: Connection, db: Arc<Database>, webhook: A
                             // Determine final direction
                             let final_direction = if !call.answered && call.direction == "incoming" {
                                 // Missed call
-                                let _ = db.mark_call_missed(call.db_id);
+                                let _ = db.mark_call_missed(call.db_id).await;
                                 "missed".to_string()
                             } else {
-                                let _ = db.update_call_end(call.db_id, duration, call.answered);
+                                let _ = db.update_call_end(call.db_id, duration, call.answered).await;
                                 call.direction.clone()
                             };
                             
