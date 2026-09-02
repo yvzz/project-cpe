@@ -156,6 +156,10 @@ jobs:
       
       # ==================== 打包 OTA ====================
       - name: Package OTA
+        env:
+          # Ed25519 私钥（base64 编码的 32 字节原始种子）。在仓库 Secrets 中配置。
+          # 缺失则打包会直接失败（固件会拒绝无签名的 OTA 包）。
+          OTA_SIGN_KEY_B64: ${{ secrets.OTA_SIGN_KEY_B64 }}
         run: |
           echo "=========================================="
           echo "  生成 OTA 更新包"
@@ -222,6 +226,26 @@ jobs:
           }
           EOF
           
+          cat "$OTA_TMP/meta.json"
+          echo ""
+          
+          # ==================== Ed25519 签名 OTA 包 ====================
+          # 固件侧（ota.rs）强制校验 meta.json 的 signature 字段，未签名/验签失败一律拒绝安装。
+          echo "🔏 对 meta.json 进行 Ed25519 签名..."
+          if [ -z "${OTA_SIGN_KEY_B64}" ]; then
+            echo "❌ 错误: 未配置仓库 Secret OTA_SIGN_KEY_B64，无法签名 OTA 包（固件会拒绝）"
+            exit 1
+          fi
+          echo "${OTA_SIGN_KEY_B64}" | base64 -d > "$OTA_TMP/ota_sign_key.bin"
+          python3 -m pip install --break-system-packages --quiet cryptography 2>/dev/null \
+            || pip install --break-system-packages --quiet cryptography 2>/dev/null \
+            || pip install --quiet cryptography 2>/dev/null \
+            || true
+          python3 scripts/sign_ota.py \
+            --meta "$OTA_TMP/meta.json" \
+            --binary "$OTA_TMP/udx710" \
+            --key "$OTA_TMP/ota_sign_key.bin"
+          echo "✅ 签名完成，meta.json 已写入 signature 字段"
           cat "$OTA_TMP/meta.json"
           echo ""
           
