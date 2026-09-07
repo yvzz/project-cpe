@@ -63,7 +63,7 @@ import { api } from '../api'
 import ErrorSnackbar from '../components/ErrorSnackbar'
 import { useRefreshInterval } from '../contexts/RefreshContext'
 import type { UsbModeResponse, AirplaneModeResponse, NotificationChannel, ChannelType, DingtalkConfig, FeishuConfig, WecomConfig, EmailConfig, BarkConfig, ScheduledRebootConfig, DataConnectionConfig, DataUsageResponse, SmsPushConfig, SmsPushProvider } from '../api/types'
-import { DEFAULT_NOTIFICATION_CHANNEL } from '../api/types'
+import { DEFAULT_NOTIFICATION_CHANNEL, DEFAULT_SMS_PUSH_TITLE_TEMPLATE, DEFAULT_SMS_PUSH_BODY_TEMPLATE } from '../api/types'
 
 // ========== 通知渠道辅助组件 ==========
 
