@@ -10,15 +10,17 @@
  */
 //! Webhook 转发模块
 //!
-//! 支持五种互斥单选的通知渠道：钉钉、飞书、企业微信、邮件、Bark（iOS推送）
+//! 支持九种互斥单选的通知渠道：钉钉、飞书、企业微信、邮件、Bark（iOS推送）、
+//! PushPlus、Server酱、PushDeer、ntfy（后四种吸收自上游短信推送体系）
 //! 各渠道使用各自的签名机制和 payload 格式
 
-use crate::config::{ChannelType, DingtalkConfig, EmailConfig, FeishuConfig, NotificationChannel, WecomConfig, BarkConfig};
+use crate::config::{BarkConfig, ChannelType, DingtalkConfig, EmailConfig, FeishuConfig, NotificationChannel, PushProviderConfig, WecomConfig};
 use crate::db::{CallRecord, SmsMessage};
 use base64::Engine;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use reqwest::Client;
+use serde_json::{json, Value};
 use sha2::Sha256;
 use std::fmt::Write as FmtWrite;
 use std::sync::{Arc, RwLock};
@@ -130,6 +132,10 @@ impl WebhookSender {
             ChannelType::Wecom => self.send_wecom(&config.wecom, payload).await,
             ChannelType::Email => self.send_email(&config.email, payload).await,
             ChannelType::Bark => self.send_bark(&config.bark, payload).await,
+            ChannelType::Pushplus => self.send_push_provider(&config.pushplus, ChannelType::Pushplus, payload).await,
+            ChannelType::Serverchan => self.send_push_provider(&config.serverchan, ChannelType::Serverchan, payload).await,
+            ChannelType::Pushdeer => self.send_push_provider(&config.pushdeer, ChannelType::Pushdeer, payload).await,
+            ChannelType::Ntfy => self.send_push_provider(&config.ntfy, ChannelType::Ntfy, payload).await,
         }
     }
     
@@ -159,6 +165,102 @@ impl WebhookSender {
         Ok(format!("Test message sent via {:?} successfully", config.channel))
     }
     
+    // ---------------------------------------------------------------------------
+    // 通用推送服务（PushPlus / Server酱 / PushDeer / ntfy，吸收自上游短信推送体系）
+    // ---------------------------------------------------------------------------
+
+    /// 发送通用推送服务消息。
+    /// payload 沿用 Bark 的 "标题\n\n正文" 约定；服务地址留空用官方默认端点。
+    async fn send_push_provider(
+        &self,
+        cfg: &PushProviderConfig,
+        channel: ChannelType,
+        payload: &str,
+    ) -> Result<(), String> {
+        let credential = cfg.credential.trim();
+        let topic = cfg.topic.trim();
+
+        // 配置校验（与上游 validate_config 语义一致）
+        match channel {
+            ChannelType::Ntfy => {
+                if topic.is_empty() {
+                    return Err("ntfy 主题不能为空".to_string());
+                }
+            }
+            _ => {
+                if credential.is_empty() {
+                    return Err("当前推送服务缺少凭证".to_string());
+                }
+            }
+        }
+
+        // payload 拆分为 (title, body)，与 Bark 一致
+        let (title, body) = if let Some(pos) = payload.find("\n\n") {
+            (payload[..pos].to_string(), payload[pos + 2..].to_string())
+        } else {
+            ("CPE 通知".to_string(), payload.to_string())
+        };
+
+        let request = match channel {
+            ChannelType::Pushplus => {
+                let endpoint = if cfg.url.trim().is_empty() { "https://www.pushplus.plus/send" } else { cfg.url.trim() };
+                let mut req_payload = json!({
+                    "token": credential,
+                    "title": title,
+                    "content": body,
+                    "template": "markdown",
+                });
+                if !topic.is_empty() {
+                    req_payload["topic"] = json!(topic);
+                }
+                self.client.post(endpoint).json(&req_payload)
+            }
+            ChannelType::Serverchan => {
+                let base = if cfg.url.trim().is_empty() { "https://sctapi.ftqq.com".to_string() } else { cfg.url.trim().trim_end_matches('/').to_string() };
+                let endpoint = format!("{}/{}.send", base, credential);
+                self.client.post(endpoint).form(&[
+                    ("title", title.as_str()),
+                    ("text", title.as_str()),
+                    ("desp", body.as_str()),
+                ])
+            }
+            ChannelType::Pushdeer => {
+                let endpoint = if cfg.url.trim().is_empty() { "https://api2.pushdeer.com/message/push" } else { cfg.url.trim() };
+                self.client.post(endpoint).form(&[
+                    ("pushkey", credential),
+                    ("text", title.as_str()),
+                    ("desp", body.as_str()),
+                    ("type", "markdown"),
+                ])
+            }
+            ChannelType::Ntfy => {
+                let base = if cfg.url.trim().is_empty() { "https://ntfy.sh".to_string() } else { cfg.url.trim().trim_end_matches('/').to_string() };
+                let endpoint = format!("{}/", base);
+                let mut request = self.client.post(endpoint).json(&json!({
+                    "topic": topic,
+                    "title": title,
+                    "message": body,
+                    "markdown": true,
+                }));
+                if !credential.is_empty() {
+                    request = request.bearer_auth(credential);
+                }
+                request
+            }
+            _ => return Err(format!("Unsupported push provider: {:?}", channel)),
+        };
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| format!("Failed to send push message: {}", e))?;
+
+        let status = response.status();
+        let response_body = response.text().await.unwrap_or_default();
+        check_push_provider_response(channel, status, &response_body)?;
+        Ok(())
+    }
+
     // ---------------------------------------------------------------------------
     // 各渠道发送函数
     // ---------------------------------------------------------------------------
@@ -392,7 +494,7 @@ fn render_sms_for_channel(config: &NotificationChannel, sms: &SmsMessage, device
             );
             format!("📱短信\n\n{}", body)
         }
-        ChannelType::Bark => {
+        ChannelType::Bark | ChannelType::Pushplus | ChannelType::Serverchan | ChannelType::Pushdeer | ChannelType::Ntfy => {
             let body = format!(
                 "来自：{}\n内容：{}\n\n本机号码：{}\n时间：{}",
                 sms.phone_number, sms.content, device_label, local_time
@@ -433,7 +535,7 @@ fn render_call_for_channel(config: &NotificationChannel, call: &CallRecord, devi
             );
             format!("📞来电提醒\n\n{}", body)
         }
-        ChannelType::Bark => {
+        ChannelType::Bark | ChannelType::Pushplus | ChannelType::Serverchan | ChannelType::Pushdeer | ChannelType::Ntfy => {
             let body = format!(
                 "来电号码：{}\n时长：{}秒\n\n本机号码：{}\n时间：{}",
                 call.phone_number, call.duration, device_label, local_time
@@ -550,4 +652,60 @@ async fn check_response(response: reqwest::Response) -> Result<(), String> {
         let body = response.text().await.unwrap_or_default();
         Err(format!("Request failed with status {}: {}", status, body))
     }
+}
+
+/// 校验通用推送服务的响应（移植自上游 validate_provider_response 语义）。
+/// 各服务 HTTP 200 之外还有业务码：pushplus/bark 要求 code=200，
+/// serverchan/pushdeer 要求 code=0 或 200，ntfy 只看 HTTP 状态。
+fn check_push_provider_response(
+    channel: ChannelType,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> Result<(), String> {
+    if !status.is_success() {
+        let preview: String = body.chars().take(200).collect();
+        return Err(format!("推送服务返回错误状态 {} {}", status, preview));
+    }
+
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+
+    let value = match serde_json::from_str::<Value>(trimmed) {
+        Ok(value) => value,
+        Err(_) => return Ok(()),
+    };
+
+    let code = value.get("code").and_then(Value::as_i64);
+    match channel {
+        ChannelType::Pushplus => {
+            if let Some(code) = code {
+                if code != 200 {
+                    return Err(extract_push_provider_error(&value));
+                }
+            }
+        }
+        ChannelType::Serverchan | ChannelType::Pushdeer => {
+            if let Some(code) = code {
+                if code != 0 && code != 200 {
+                    return Err(extract_push_provider_error(&value));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn extract_push_provider_error(value: &Value) -> String {
+    let message = value
+        .get("msg")
+        .or_else(|| value.get("message"))
+        .or_else(|| value.get("error"))
+        .and_then(Value::as_str)
+        .unwrap_or("未知错误");
+
+    format!("推送服务返回失败: {}", message)
 }

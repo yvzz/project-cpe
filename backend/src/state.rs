@@ -19,7 +19,6 @@ use crate::config::ConfigManager;
 use crate::db::Database;
 use crate::scheduled_reboot::ScheduledRebootManager;
 use crate::usage::DataUsageTracker;
-use crate::sms_push::SmsPushSender;
 use crate::webhook::WebhookSender;
 
 pub struct FrontendRuntime {
@@ -56,7 +55,6 @@ pub struct AppState {
     /// 数据流量累计追踪器（流量限额功能）
     pub data_usage_tracker: Arc<DataUsageTracker>,
     /// 短信推送发送器（上游）
-    pub sms_push_sender: Arc<SmsPushSender>,
     /// 前端在线状态（上游，自适应轮询用）
     pub frontend_runtime: Arc<FrontendRuntime>,
 }
@@ -69,7 +67,6 @@ impl AppState {
         webhook_sender: Arc<WebhookSender>,
         scheduled_reboot_manager: Arc<ScheduledRebootManager>,
         data_usage_tracker: Arc<DataUsageTracker>,
-        sms_push_sender: Arc<SmsPushSender>,
         frontend_runtime: Arc<FrontendRuntime>,
     ) -> Self {
         Self {
@@ -79,7 +76,6 @@ impl AppState {
             webhook_sender,
             scheduled_reboot_manager,
             data_usage_tracker,
-            sms_push_sender,
             frontend_runtime,
         }
     }
@@ -118,12 +114,6 @@ impl FromRef<AppState> for Arc<ScheduledRebootManager> {
 impl FromRef<AppState> for Arc<DataUsageTracker> {
     fn from_ref(state: &AppState) -> Self {
         state.data_usage_tracker.clone()
-    }
-}
-
-impl FromRef<AppState> for Arc<SmsPushSender> {
-    fn from_ref(state: &AppState) -> Self {
-        state.sms_push_sender.clone()
     }
 }
 

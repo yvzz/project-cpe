@@ -696,7 +696,30 @@ export interface WebhookTestResponse {
 
 // ============ 通知渠道类型 ============
 
-export type ChannelType = 'none' | 'dingtalk' | 'feishu' | 'wecom' | 'email' | 'bark'
+export type ChannelType = 'none' | 'dingtalk' | 'feishu' | 'wecom' | 'email' | 'bark' | 'pushplus' | 'serverchan' | 'pushdeer' | 'ntfy'
+
+// 通用推送服务配置（pushplus / serverchan / pushdeer / ntfy 共用）
+export interface PushProviderConfig {
+  url: string
+  credential: string
+  topic: string
+}
+
+export interface NotificationChannel {
+  channel: ChannelType
+  dingtalk: DingtalkConfig
+  feishu: FeishuConfig
+  wecom: WecomConfig
+  email: EmailConfig
+  bark: BarkConfig
+  pushplus: PushProviderConfig
+  serverchan: PushProviderConfig
+  pushdeer: PushProviderConfig
+  ntfy: PushProviderConfig
+  forward_sms: boolean
+  forward_calls: boolean
+  device_name: string
+}
 
 // 钉钉机器人配置
 export interface DingtalkConfig {
@@ -740,19 +763,6 @@ export interface BarkConfig {
   group: string
 }
 
-// 通知渠道统一结构
-export interface NotificationChannel {
-  channel: ChannelType
-  dingtalk: DingtalkConfig
-  feishu: FeishuConfig
-  wecom: WecomConfig
-  email: EmailConfig
-  bark: BarkConfig
-  forward_sms: boolean
-  forward_calls: boolean
-  device_name: string
-}
-
 // 默认空配置
 export const DEFAULT_NOTIFICATION_CHANNEL: NotificationChannel = {
   channel: 'none',
@@ -776,6 +786,10 @@ export const DEFAULT_NOTIFICATION_CHANNEL: NotificationChannel = {
     icon: '',
     group: 'CPE',
   },
+  pushplus: { url: '', credential: '', topic: '' },
+  serverchan: { url: '', credential: '', topic: '' },
+  pushdeer: { url: '', credential: '', topic: '' },
+  ntfy: { url: '', credential: '', topic: '' },
   forward_sms: true,
   forward_calls: true,
   device_name: '',
@@ -789,28 +803,6 @@ export interface ScheduledRebootConfig {
   hour: number
   minute: number
 }
-
-// ============ 短信推送配置类型 ============
-
-export type SmsPushProvider = 'pushplus' | 'serverchan' | 'pushdeer' | 'bark' | 'ntfy'
-
-export interface SmsPushConfig {
-  enabled: boolean
-  provider: SmsPushProvider
-  credential: string
-  server_url: string
-  topic: string
-  title_template: string
-  body_template: string
-}
-
-export const DEFAULT_SMS_PUSH_TITLE_TEMPLATE = '短信通知 · {{phone_number}}'
-
-export const DEFAULT_SMS_PUSH_BODY_TEMPLATE = `时间: {{timestamp}}
-号码: {{phone_number}}
-状态: {{status}}
-
-{{content}}`
 
 // ========== OTA 更新类型 ==========
 

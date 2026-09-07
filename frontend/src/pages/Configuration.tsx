@@ -48,7 +48,6 @@ import {
   HealthAndSafety,
   FlightTakeoff,
   Webhook,
-  Sms,
   PlayArrow,
   Chat,
   Email,
@@ -62,8 +61,8 @@ import {
 import { api } from '../api'
 import ErrorSnackbar from '../components/ErrorSnackbar'
 import { useRefreshInterval } from '../contexts/RefreshContext'
-import type { UsbModeResponse, AirplaneModeResponse, NotificationChannel, ChannelType, DingtalkConfig, FeishuConfig, WecomConfig, EmailConfig, BarkConfig, ScheduledRebootConfig, DataConnectionConfig, DataUsageResponse, SmsPushConfig, SmsPushProvider } from '../api/types'
-import { DEFAULT_NOTIFICATION_CHANNEL, DEFAULT_SMS_PUSH_TITLE_TEMPLATE, DEFAULT_SMS_PUSH_BODY_TEMPLATE } from '../api/types'
+import type { UsbModeResponse, AirplaneModeResponse, NotificationChannel, ChannelType, DingtalkConfig, FeishuConfig, WecomConfig, EmailConfig, BarkConfig, PushProviderConfig, ScheduledRebootConfig, DataConnectionConfig, DataUsageResponse } from '../api/types'
+import { DEFAULT_NOTIFICATION_CHANNEL } from '../api/types'
 
 // ========== 通知渠道辅助组件 ==========
 
@@ -103,6 +102,30 @@ const CHANNEL_OPTIONS: { value: ChannelType; label: string; icon: React.ReactNod
     label: 'Bark (iOS推送)',
     icon: <Smartphone />,
     desc: '通过Bark推送到iOS设备'
+  },
+  {
+    value: 'pushplus',
+    label: 'PushPlus',
+    icon: <Chat />,
+    desc: '通过PushPlus推送到微信'
+  },
+  {
+    value: 'serverchan',
+    label: 'Server酱',
+    icon: <Smartphone />,
+    desc: '通过Server酱推送到微信'
+  },
+  {
+    value: 'pushdeer',
+    label: 'PushDeer',
+    icon: <Smartphone />,
+    desc: '自建或官方PushDeer服务'
+  },
+  {
+    value: 'ntfy',
+    label: 'ntfy',
+    icon: <Webhook />,
+    desc: '通过ntfy主题推送到订阅设备'
   },
 ]
 
@@ -269,90 +292,28 @@ interface HealthStatus {
   timestamp?: string
 }
 
-interface SmsPushProviderOption {
-  value: SmsPushProvider
-  label: string
-  defaultServerUrl: string
-  credentialLabel: string
-  credentialPlaceholder: string
-  credentialRequired: boolean
-  topicLabel?: string
-  topicPlaceholder?: string
-  topicRequired?: boolean
-}
-
-const SMS_PUSH_PROVIDER_OPTIONS: SmsPushProviderOption[] = [
-  {
-    value: 'pushplus',
-    label: 'PushPlus',
-    defaultServerUrl: 'https://www.pushplus.plus/send',
-    credentialLabel: 'Token',
-    credentialPlaceholder: '输入 PushPlus token',
-    credentialRequired: true,
-    topicLabel: 'Topic (可选)',
-    topicPlaceholder: '输入 PushPlus topic',
-  },
-  {
-    value: 'serverchan',
-    label: 'Server酱 Turbo',
-    defaultServerUrl: 'https://sctapi.ftqq.com',
-    credentialLabel: 'SendKey',
-    credentialPlaceholder: '输入 Server酱 SendKey',
-    credentialRequired: true,
-  },
-  {
-    value: 'pushdeer',
-    label: 'PushDeer',
-    defaultServerUrl: 'https://api2.pushdeer.com/message/push',
-    credentialLabel: 'PushKey',
-    credentialPlaceholder: '输入 PushDeer pushkey',
-    credentialRequired: true,
-  },
-  {
-    value: 'bark',
-    label: 'Bark',
-    defaultServerUrl: 'https://api.day.app/push',
-    credentialLabel: 'Device Key',
-    credentialPlaceholder: '输入 Bark device key',
-    credentialRequired: true,
-    topicLabel: '分组 (可选)',
-    topicPlaceholder: '输入 Bark group',
-  },
-  {
-    value: 'ntfy',
-    label: 'ntfy',
-    defaultServerUrl: 'https://ntfy.sh',
-    credentialLabel: '访问令牌 (可选)',
-    credentialPlaceholder: '留空表示匿名发布',
-    credentialRequired: false,
-    topicLabel: '主题 / Topic',
-    topicPlaceholder: '输入 ntfy topic',
-    topicRequired: true,
-  },
-]
-
-function getSmsPushProviderOption(provider: SmsPushProvider): SmsPushProviderOption {
-  return SMS_PUSH_PROVIDER_OPTIONS.find((option) => option.value === provider) ?? SMS_PUSH_PROVIDER_OPTIONS[0]
-}
-
-function normalizeSmsPushConfig(config: SmsPushConfig): SmsPushConfig {
-  const option = getSmsPushProviderOption(config.provider)
-  return {
-    ...config,
-    server_url: config.server_url || option.defaultServerUrl,
-  }
-}
-
-function createDefaultSmsPushConfig(): SmsPushConfig {
-  return normalizeSmsPushConfig({
-    enabled: false,
-    provider: 'pushplus',
-    credential: '',
-    server_url: '',
-    topic: '',
-    title_template: DEFAULT_SMS_PUSH_TITLE_TEMPLATE,
-    body_template: DEFAULT_SMS_PUSH_BODY_TEMPLATE,
-  })
+function PushProviderForm({ label, config, onChange }: { label: string; config: PushProviderConfig; onChange: (c: PushProviderConfig) => void }) {
+  return (
+    <Box>
+      <Grid container spacing={2}>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <TextField fullWidth label={`${label} 凭证`} value={config.credential}
+            onChange={e => onChange({ ...config, credential: e.target.value })}
+            placeholder="Token / SendKey / PushKey / 访问令牌" />
+        </Grid>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <TextField fullWidth label="服务地址 (可选)" value={config.url}
+            onChange={e => onChange({ ...config, url: e.target.value })}
+            placeholder="留空使用官方默认端点，自建服务填完整地址" />
+        </Grid>
+        <Grid size={{ xs: 12 }}>
+          <TextField fullWidth label="主题 / 分组 (可选)" value={config.topic}
+            onChange={e => onChange({ ...config, topic: e.target.value })}
+            helperText="ntfy 必须填写主题，其余服务可作分组" />
+        </Grid>
+      </Grid>
+    </Box>
+  )
 }
 
 export default function ConfigurationPage() {
@@ -399,11 +360,6 @@ export default function ConfigurationPage() {
   })
   const [rebootConfigSaving, setRebootConfigSaving] = useState(false)
 
-  // 短信推送配置状态
-  const [smsPushConfig, setSmsPushConfig] = useState<SmsPushConfig>(createDefaultSmsPushConfig())
-  const [smsPushLoading, setSmsPushLoading] = useState(false)
-  const [smsPushTesting, setSmsPushTesting] = useState(false)
-
   const checkHealth = useCallback(async () => {
     setHealthLoading(true)
     try {
@@ -427,12 +383,11 @@ export default function ConfigurationPage() {
     setError(null)
     
     try {
-      const [dataRes, usbRes, airplaneModeRes, webhookRes, smsPushRes, deviceNameRes, rebootConfigRes, dataConfigRes, dataUsageRes] = await Promise.all([
+      const [dataRes, usbRes, airplaneModeRes, webhookRes, deviceNameRes, rebootConfigRes, dataConfigRes, dataUsageRes] = await Promise.all([
         api.getDataStatus(),
         api.getUsbMode(),
         api.getAirplaneMode(),
         api.getWebhookConfig(),
-        api.getSmsPushConfig(),
         api.getDeviceName(),
         api.getScheduledReboot(),
         api.getDataConfig(),
@@ -448,7 +403,6 @@ export default function ConfigurationPage() {
       }
       if (airplaneModeRes.data) setAirplaneMode(airplaneModeRes.data)
       if (webhookRes.data) setNotificationChannel(webhookRes.data)
-      if (smsPushRes.data) setSmsPushConfig(normalizeSmsPushConfig(smsPushRes.data))
       if (deviceNameRes.data) setDeviceName(deviceNameRes.data.device_name || '')
       if (rebootConfigRes.data) setScheduledReboot(rebootConfigRes.data)
 
@@ -693,74 +647,6 @@ export default function ConfigurationPage() {
       setRebootConfigSaving(false)
     }
   }
-
-  const handleSmsPushProviderChange = (provider: SmsPushProvider) => {
-    const previousOption = getSmsPushProviderOption(smsPushConfig.provider)
-    const nextOption = getSmsPushProviderOption(provider)
-
-    setSmsPushConfig({
-      ...smsPushConfig,
-      provider,
-      server_url:
-        !smsPushConfig.server_url || smsPushConfig.server_url === previousOption.defaultServerUrl
-          ? nextOption.defaultServerUrl
-          : smsPushConfig.server_url,
-      topic: nextOption.topicLabel ? smsPushConfig.topic : '',
-    })
-  }
-
-  const handleSaveSmsPush = async () => {
-    setSmsPushLoading(true)
-    setError(null)
-    try {
-      const nextConfig = normalizeSmsPushConfig(smsPushConfig)
-      const response = await api.setSmsPushConfig(nextConfig)
-      if (response.status === 'ok') {
-        setSmsPushConfig(nextConfig)
-        setSuccess('短信推送配置已保存')
-      } else {
-        setError(response.message)
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSmsPushLoading(false)
-    }
-  }
-
-  const handleTestSmsPush = async () => {
-    setSmsPushTesting(true)
-    setError(null)
-    try {
-      const nextConfig = normalizeSmsPushConfig(smsPushConfig)
-      const saveResponse = await api.setSmsPushConfig(nextConfig)
-      if (saveResponse.status !== 'ok') {
-        setError(saveResponse.message)
-        return
-      }
-
-      setSmsPushConfig(nextConfig)
-      const response = await api.testSmsPush()
-      if (response.status === 'ok' && response.data) {
-        if (response.data.success) {
-          setSuccess(response.data.message)
-        } else {
-          setError(response.data.message)
-        }
-      } else {
-        setError(response.message)
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSmsPushTesting(false)
-    }
-  }
-
-  const currentSmsPushProvider = getSmsPushProviderOption(smsPushConfig.provider)
-  const smsPushCanTest = smsPushConfig.enabled
-    && (!currentSmsPushProvider.credentialRequired || !!smsPushConfig.credential.trim())
-    && (!currentSmsPushProvider.topicRequired || !!smsPushConfig.topic.trim())
 
   if (loading) {
     return (
@@ -1554,6 +1440,34 @@ export default function ConfigurationPage() {
                 onChange={c => setNotificationChannel(prev => ({ ...prev, bark: c }))}
               />
             )}
+            {notificationChannel.channel === 'pushplus' && (
+              <PushProviderForm
+                label="PushPlus"
+                config={notificationChannel.pushplus}
+                onChange={c => setNotificationChannel(prev => ({ ...prev, pushplus: c }))}
+              />
+            )}
+            {notificationChannel.channel === 'serverchan' && (
+              <PushProviderForm
+                label="Server酱"
+                config={notificationChannel.serverchan}
+                onChange={c => setNotificationChannel(prev => ({ ...prev, serverchan: c }))}
+              />
+            )}
+            {notificationChannel.channel === 'pushdeer' && (
+              <PushProviderForm
+                label="PushDeer"
+                config={notificationChannel.pushdeer}
+                onChange={c => setNotificationChannel(prev => ({ ...prev, pushdeer: c }))}
+              />
+            )}
+            {notificationChannel.channel === 'ntfy' && (
+              <PushProviderForm
+                label="ntfy"
+                config={notificationChannel.ntfy}
+                onChange={c => setNotificationChannel(prev => ({ ...prev, ntfy: c }))}
+              />
+            )}
             {notificationChannel.channel === 'none' && (
               <Alert severity="info">已关闭通知渠道，不推送任何消息。</Alert>
             )}
@@ -1624,186 +1538,7 @@ export default function ConfigurationPage() {
           </AccordionDetails>
         </Accordion>
 
-        <Accordion
-          expanded={expanded === 'smsPush'}
-          onChange={handleAccordionChange('smsPush')}
-        >
-          <AccordionSummary expandIcon={<ExpandMore />}>
-            <Box display="flex" alignItems="center" gap={1} width="100%">
-              <Sms color={smsPushConfig.enabled ? 'success' : 'primary'} />
-              <Typography fontWeight={600}>短信推送服务</Typography>
-              <Box flexGrow={1} />
-              <Chip
-                label={smsPushConfig.enabled ? currentSmsPushProvider.label : '未启用'}
-                color={smsPushConfig.enabled ? 'success' : 'default'}
-                size="small"
-                onClick={(e: MouseEvent) => e.stopPropagation()}
-              />
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            <Typography variant="body2" color="text.secondary" paragraph>
-              适合 PushPlus、Server酱 Turbo、PushDeer、Bark、ntfy 这类轻量推送服务。
-              相比原始 Webhook，这里只需要填凭证和模板，更适合短信通知。
-            </Typography>
-
-            <Divider sx={{ my: 2 }} />
-
-            <FormControlLabel
-              control={(
-                <Switch
-                  checked={smsPushConfig.enabled}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => setSmsPushConfig({ ...smsPushConfig, enabled: e.target.checked })}
-                  color="success"
-                />
-              )}
-              label={(
-                <Box>
-                  <Typography variant="body1" fontWeight={600}>
-                    {smsPushConfig.enabled ? '短信推送已启用' : '短信推送已禁用'}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    仅针对短信生效，不影响原有来电 Webhook 转发
-                  </Typography>
-                </Box>
-              )}
-              sx={{ mb: 2 }}
-            />
-
-            <Grid container spacing={2} sx={{ mb: 2 }}>
-              <Grid size={{ xs: 12, md: 4 }}>
-                <TextField
-                  fullWidth
-                  select
-                  label="推送服务"
-                  value={smsPushConfig.provider}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => handleSmsPushProviderChange(e.target.value as SmsPushProvider)}
-                  disabled={!smsPushConfig.enabled}
-                >
-                  {SMS_PUSH_PROVIDER_OPTIONS.map((option) => (
-                    <MenuItem key={option.value} value={option.value}>
-                      {option.label}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              </Grid>
-              <Grid size={{ xs: 12, md: 8 }}>
-                <TextField
-                  fullWidth
-                  label="服务地址"
-                  value={smsPushConfig.server_url}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => setSmsPushConfig({ ...smsPushConfig, server_url: e.target.value })}
-                  disabled={!smsPushConfig.enabled}
-                  helperText={`默认: ${currentSmsPushProvider.defaultServerUrl}`}
-                />
-              </Grid>
-              <Grid size={{ xs: 12, md: currentSmsPushProvider.topicLabel ? 6 : 12 }}>
-                <TextField
-                  fullWidth
-                  label={currentSmsPushProvider.credentialLabel}
-                  value={smsPushConfig.credential}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => setSmsPushConfig({ ...smsPushConfig, credential: e.target.value })}
-                  placeholder={currentSmsPushProvider.credentialPlaceholder}
-                  disabled={!smsPushConfig.enabled}
-                  type="password"
-                  helperText={currentSmsPushProvider.credentialRequired ? '该服务必须填写凭证' : '该服务可留空'}
-                />
-              </Grid>
-              {currentSmsPushProvider.topicLabel && (
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <TextField
-                    fullWidth
-                    label={currentSmsPushProvider.topicLabel}
-                    value={smsPushConfig.topic}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => setSmsPushConfig({ ...smsPushConfig, topic: e.target.value })}
-                    placeholder={currentSmsPushProvider.topicPlaceholder}
-                    disabled={!smsPushConfig.enabled}
-                    helperText={currentSmsPushProvider.topicRequired ? '当前服务必须填写主题' : '当前服务可留空'}
-                  />
-                </Grid>
-              )}
-            </Grid>
-
-            <Alert severity="info" sx={{ mb: 2 }}>
-              <Typography variant="body2">
-                <strong>支持的模板变量：</strong>{' '}
-                <code>{'{{phone_number}}'}</code>, <code>{'{{content}}'}</code>, <code>{'{{timestamp}}'}</code>,
-                {' '}
-                <code>{'{{status}}'}</code>, <code>{'{{direction}}'}</code>
-              </Typography>
-            </Alert>
-
-            <TextField
-              fullWidth
-              label="通知标题模板"
-              value={smsPushConfig.title_template}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setSmsPushConfig({ ...smsPushConfig, title_template: e.target.value })}
-              sx={{ mb: 2 }}
-              disabled={!smsPushConfig.enabled}
-              placeholder={DEFAULT_SMS_PUSH_TITLE_TEMPLATE}
-            />
-
-            <TextField
-              fullWidth
-              label="通知内容模板"
-              value={smsPushConfig.body_template}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setSmsPushConfig({ ...smsPushConfig, body_template: e.target.value })}
-              multiline
-              rows={6}
-              sx={{ mb: 2 }}
-              disabled={!smsPushConfig.enabled}
-              placeholder={DEFAULT_SMS_PUSH_BODY_TEMPLATE}
-              InputProps={{
-                sx: { fontFamily: 'monospace', fontSize: '0.85rem' },
-              }}
-            />
-
-            <Box display="flex" gap={1} mb={2}>
-              <Button
-                size="small"
-                variant="outlined"
-                onClick={() => setSmsPushConfig({
-                  ...smsPushConfig,
-                  title_template: DEFAULT_SMS_PUSH_TITLE_TEMPLATE,
-                  body_template: DEFAULT_SMS_PUSH_BODY_TEMPLATE,
-                })}
-                disabled={!smsPushConfig.enabled}
-              >
-                重置默认模板
-              </Button>
-            </Box>
-
-            <Divider sx={{ my: 2 }} />
-
-            <Box display="flex" gap={2}>
-              <Button
-                variant="contained"
-                fullWidth
-                onClick={() => void handleSaveSmsPush()}
-                disabled={smsPushLoading}
-                startIcon={smsPushLoading ? <CircularProgress size={20} /> : undefined}
-              >
-                {smsPushLoading ? '保存中...' : '保存配置'}
-              </Button>
-              <Button
-                variant="outlined"
-                onClick={() => void handleTestSmsPush()}
-                disabled={smsPushTesting || !smsPushCanTest}
-                startIcon={smsPushTesting ? <CircularProgress size={20} /> : <PlayArrow />}
-              >
-                {smsPushTesting ? '测试中...' : '测试'}
-              </Button>
-            </Box>
-
-            <Alert severity="success" sx={{ mt: 2 }}>
-              <Typography variant="body2">
-                <strong>💡 提示</strong><br />
-                测试会发送一条模拟短信，建议先确认凭证、服务地址和主题是否填写正确。
-              </Typography>
-            </Alert>
-          </AccordionDetails>
-        </Accordion>
-      </Box>
+              </Box>
     </Box>
   )
 }

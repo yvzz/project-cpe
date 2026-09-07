@@ -71,7 +71,6 @@ import type {
   InitScriptResponse,
   SetInitScriptRequest,
   WebhookTestResponse,
-  SmsPushConfig,
   RefreshConfigResponse,
   OtaStatusResponse,
   OtaUploadResponse,
@@ -597,23 +596,6 @@ class UDX710API {
     return request<ApiResponse<import('./types').ScheduledRebootConfig>>('/system/scheduled-reboot', {
       method: 'POST',
       body: JSON.stringify(config),
-    })
-  }
-
-  async getSmsPushConfig() {
-    return request<ApiResponse<SmsPushConfig>>('/sms-push/config')
-  }
-
-  async setSmsPushConfig(config: SmsPushConfig) {
-    return request<ApiResponse<Record<string, unknown>>>('/sms-push/config', {
-      method: 'POST',
-      body: JSON.stringify(config),
-    })
-  }
-
-  async testSmsPush() {
-    return request<ApiResponse<WebhookTestResponse>>('/sms-push/test', {
-      method: 'POST',
     })
   }
 

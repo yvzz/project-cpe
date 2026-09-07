@@ -45,7 +45,6 @@ mod models;
 mod ota;
 mod scheduled_reboot;
 mod serial;
-mod sms_push;
 mod sms_listener;
 mod state;
 mod usage;
@@ -61,7 +60,6 @@ use crate::db::cleanup_old_sms;
 use crate::db::cleanup_old_calls;
 use state::{AppState, FrontendRuntime};
 use crate::usage::DataUsageTracker;
-use sms_push::SmsPushSender;
 use webhook::WebhookSender;
 use scheduled_reboot::ScheduledRebootManager;
 
@@ -242,7 +240,6 @@ async fn main() -> Result<()> {
     // 初始化 Webhook 发送器
     let webhook_sender = Arc::new(WebhookSender::new(Arc::clone(&config_manager)));
     // 初始化短信推送发送器（上游）
-    let sms_push_sender = Arc::new(SmsPushSender::new(Arc::clone(&config_manager)));
     // 初始化前端在线状态跟踪（上游，自适应轮询）
     let frontend_runtime = Arc::new(FrontendRuntime::new());
 
@@ -271,9 +268,8 @@ async fn main() -> Result<()> {
         let conn_clone = Connection::system().await?;
         let db_clone = Arc::clone(&app_db);
         let webhook_clone = Arc::clone(&webhook_sender);
-        let sms_push_clone = Arc::clone(&sms_push_sender);
         tokio::spawn(async move {
-            let _ = sms_listener::start_sms_listener(conn_clone, db_clone, webhook_clone, sms_push_clone).await;
+            let _ = sms_listener::start_sms_listener(conn_clone, db_clone, webhook_clone).await;
         });
     }
     
@@ -328,7 +324,6 @@ async fn main() -> Result<()> {
         webhook_sender,
         scheduled_reboot_manager,
         data_usage_tracker,
-        sms_push_sender,
         frontend_runtime,
     );
 
@@ -409,8 +404,6 @@ async fn main() -> Result<()> {
         .route("/api/webhook/config", get(get_webhook_config_handler).post(set_webhook_config_handler).options(options_handler))
         .route("/api/webhook/test", post(test_webhook_handler).options(options_handler))
         // ========== 短信推送配置接口 ==========
-        .route("/api/sms-push/config", get(get_sms_push_config_handler).post(set_sms_push_config_handler).options(options_handler))
-        .route("/api/sms-push/test", post(test_sms_push_handler).options(options_handler))
         .route("/api/refresh/config", get(get_refresh_config_handler).post(set_refresh_config_handler).options(options_handler))
         .route("/api/refresh/heartbeat", post(frontend_refresh_heartbeat_handler).options(options_handler))
         // ========== OTA 更新接口 ==========

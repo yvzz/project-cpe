@@ -16,7 +16,6 @@
 //! https://github.com/1orz/project-cpe
 
 use crate::db::{Database, SmsMessage, CallRecord};
-use crate::sms_push::SmsPushSender;
 use crate::webhook::WebhookSender;
 use std::sync::Arc;
 use zbus::{Connection, MessageStream, Proxy};
@@ -208,12 +207,11 @@ fn decode_ucs2(hex: &str) -> Result<String, String> {
         .map_err(|e| format!("UTF-16 decode error: {}", e))
 }
 
-/// Start SMS listener with webhook and SMS push support
+/// Start SMS listener with webhook support
 pub async fn start_sms_listener(
     conn: Connection,
     db: Arc<Database>,
     webhook: Arc<WebhookSender>,
-    sms_push: Arc<SmsPushSender>,
 ) -> zbus::Result<()> {
     // Subscribe to D-Bus signals via proxy
     let dbus_proxy = Proxy::new(&conn, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus").await?;
@@ -247,7 +245,7 @@ pub async fn start_sms_listener(
                     
                     // Store to database
                     if let Ok(id) = db.insert_sms("incoming", &sender, &content, "received", None).await {
-                        // Forward to webhook / SMS push
+                        // Forward to webhook
                         let sms = SmsMessage {
                             id,
                             direction: "incoming".to_string(),
@@ -258,10 +256,8 @@ pub async fn start_sms_listener(
                             pdu: None,
                         };
                         let webhook_clone = Arc::clone(&webhook);
-                        let sms_push_clone = Arc::clone(&sms_push);
                         tokio::spawn(async move {
                             let _ = webhook_clone.forward_sms(&sms).await;
-                            let _ = sms_push_clone.forward_sms(&sms).await;
                         });
                     }
                 }
