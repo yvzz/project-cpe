@@ -31,6 +31,12 @@ type HmacSha256 = Hmac<Sha256>;
 // 默认模板（各渠道内置 fallback）
 // ---------------------------------------------------------------------------
 
+/// 轻量渠道（Bark/邮件/pushplus 等）默认标题/正文模板，{{变量}} 占位
+const DEFAULT_SMS_TITLE_TEMPLATE: &str = "📱短信";
+const DEFAULT_SMS_BODY_TEMPLATE: &str = "来自：{{phone_number}}\n内容：{{content}}\n\n本机号码：{{device_name}}\n时间：{{local_time}}";
+const DEFAULT_CALL_TITLE_TEMPLATE: &str = "📞来电提醒";
+const DEFAULT_CALL_BODY_TEMPLATE: &str = "来电号码：{{phone_number}}\n时长：{{duration}}秒\n\n本机号码：{{device_name}}\n时间：{{local_time}}";
+
 const DEFAULT_DINGTALK_TEMPLATE: &str = r#"{"msgtype":"text","text":{"content":"📱短信\n来自：{{phone_number}}\n内容：{{content}}\n\n本机号码：{{device_name}}\n时间：{{local_time}}"}}"#;
 
 const DEFAULT_FEISHU_TEMPLATE: &str = r#"{"msg_type":"text","content":{"text":"📱短信\n来自：{{phone_number}}\n内容：{{content}}\n\n本机号码：{{device_name}}\n时间：{{local_time}}"}}"#;
@@ -477,29 +483,25 @@ fn render_sms_for_channel(config: &NotificationChannel, sms: &SmsMessage, device
     match config.channel {
         ChannelType::Dingtalk => {
             let tpl = if config.dingtalk.template.is_empty() { DEFAULT_DINGTALK_TEMPLATE } else { &config.dingtalk.template };
-            render_template(tpl, sms, None, device_label, &local_time)
+            render_template(tpl, sms, None, device_label, &local_time, true)
         }
         ChannelType::Feishu => {
             let tpl = if config.feishu.template.is_empty() { DEFAULT_FEISHU_TEMPLATE } else { &config.feishu.template };
-            render_template(tpl, sms, None, device_label, &local_time)
+            render_template(tpl, sms, None, device_label, &local_time, true)
         }
         ChannelType::Wecom => {
             let tpl = if config.wecom.template.is_empty() { DEFAULT_WECOM_TEMPLATE } else { &config.wecom.template };
-            render_template(tpl, sms, None, device_label, &local_time)
+            render_template(tpl, sms, None, device_label, &local_time, true)
         }
-        ChannelType::Email => {
-            let body = format!(
-                "来自：{}\n内容：{}\n\n本机号码：{}\n时间：{}",
-                sms.phone_number, sms.content, device_label, local_time
-            );
-            format!("📱短信\n\n{}", body)
-        }
-        ChannelType::Bark | ChannelType::Pushplus | ChannelType::Serverchan | ChannelType::Pushdeer | ChannelType::Ntfy => {
-            let body = format!(
-                "来自：{}\n内容：{}\n\n本机号码：{}\n时间：{}",
-                sms.phone_number, sms.content, device_label, local_time
-            );
-            format!("📱短信\n\n{}", body)
+        // 轻量渠道：标题/正文均可自定义模板（"标题\n\n正文" 约定，由发送方拆分）
+        ChannelType::Email | ChannelType::Bark
+        | ChannelType::Pushplus | ChannelType::Serverchan
+        | ChannelType::Pushdeer | ChannelType::Ntfy => {
+            let title_tpl = if config.sms_title_template.is_empty() { DEFAULT_SMS_TITLE_TEMPLATE } else { &config.sms_title_template };
+            let body_tpl = if config.sms_body_template.is_empty() { DEFAULT_SMS_BODY_TEMPLATE } else { &config.sms_body_template };
+            let title = render_template(title_tpl, sms, None, device_label, &local_time, false);
+            let body = render_template(body_tpl, sms, None, device_label, &local_time, false);
+            format!("{}\n\n{}", title, body)
         }
         ChannelType::None => String::new(),
     }
@@ -518,36 +520,34 @@ fn render_call_for_channel(config: &NotificationChannel, call: &CallRecord, devi
     match config.channel {
         ChannelType::Dingtalk => {
             let tpl = if config.dingtalk.template.is_empty() { DEFAULT_DINGTALK_CALL_TEMPLATE } else { &config.dingtalk.template };
-            render_template(tpl, &dummy_sms, Some(call), device_label, &local_time)
+            render_template(tpl, &dummy_sms, Some(call), device_label, &local_time, true)
         }
         ChannelType::Feishu => {
             let tpl = if config.feishu.template.is_empty() { DEFAULT_FEISHU_CALL_TEMPLATE } else { &config.feishu.template };
-            render_template(tpl, &dummy_sms, Some(call), device_label, &local_time)
+            render_template(tpl, &dummy_sms, Some(call), device_label, &local_time, true)
         }
         ChannelType::Wecom => {
             let tpl = if config.wecom.template.is_empty() { DEFAULT_WECOM_CALL_TEMPLATE } else { &config.wecom.template };
-            render_template(tpl, &dummy_sms, Some(call), device_label, &local_time)
+            render_template(tpl, &dummy_sms, Some(call), device_label, &local_time, true)
         }
-        ChannelType::Email => {
-            let body = format!(
-                "来电号码：{}\n时长：{}秒\n\n本机号码：{}\n时间：{}",
-                call.phone_number, call.duration, device_label, local_time
-            );
-            format!("📞来电提醒\n\n{}", body)
-        }
-        ChannelType::Bark | ChannelType::Pushplus | ChannelType::Serverchan | ChannelType::Pushdeer | ChannelType::Ntfy => {
-            let body = format!(
-                "来电号码：{}\n时长：{}秒\n\n本机号码：{}\n时间：{}",
-                call.phone_number, call.duration, device_label, local_time
-            );
-            format!("📞来电提醒\n\n{}", body)
+        // 轻量渠道：标题/正文均可自定义模板
+        ChannelType::Email | ChannelType::Bark
+        | ChannelType::Pushplus | ChannelType::Serverchan
+        | ChannelType::Pushdeer | ChannelType::Ntfy => {
+            let title_tpl = if config.call_title_template.is_empty() { DEFAULT_CALL_TITLE_TEMPLATE } else { &config.call_title_template };
+            let body_tpl = if config.call_body_template.is_empty() { DEFAULT_CALL_BODY_TEMPLATE } else { &config.call_body_template };
+            let title = render_template(title_tpl, &dummy_sms, Some(call), device_label, &local_time, false);
+            let body = render_template(body_tpl, &dummy_sms, Some(call), device_label, &local_time, false);
+            format!("{}\n\n{}", title, body)
         }
         ChannelType::None => String::new(),
     }
 }
 
-/// 通用模板替换，支持 {{变量名}} 格式
-fn render_template(template: &str, sms: &SmsMessage, call: Option<&CallRecord>, device_label: &str, local_time: &str) -> String {
+/// 通用模板替换，支持 {{变量名}} 格式。
+/// `json_escape=true` 时 {{content}}/{{message}} 会转义为 JSON 字符串字面量
+/// （用于整包 JSON payload 模板）；纯文本模板传 false。
+fn render_template(template: &str, sms: &SmsMessage, call: Option<&CallRecord>, device_label: &str, local_time: &str, json_escape: bool) -> String {
     let mut result = template.to_string();
 
     // 设备标识（新变量 device_name + 兼容旧的 self_number）
@@ -573,7 +573,8 @@ fn render_template(template: &str, sms: &SmsMessage, call: Option<&CallRecord>, 
     } else {
         // ========== 短信模板 ==========
         result = result.replace("{{phone_number}}", &sms.phone_number);
-        result = result.replace("{{content}}", &escape_json_string(&sms.content));
+        let content = if json_escape { escape_json_string(&sms.content) } else { sms.content.clone() };
+        result = result.replace("{{content}}", &content);
         result = result.replace("{{timestamp}}", &sms.timestamp);
         result = result.replace("{{direction}}", &sms.direction);
         let direction_cn = if sms.direction == "incoming" { "来电" } else if sms.direction == "outgoing" { "去电" } else { &sms.direction };
@@ -581,7 +582,7 @@ fn render_template(template: &str, sms: &SmsMessage, call: Option<&CallRecord>, 
         result = result.replace("{{status}}", &sms.status);
         result = result.replace("{{id}}", &sms.id.to_string());
         result = result.replace("{{sender}}", &sms.phone_number);
-        result = result.replace("{{message}}", &escape_json_string(&sms.content));
+        result = result.replace("{{message}}", &content);
         result = result.replace("{{time}}", &sms.timestamp);
     }
 

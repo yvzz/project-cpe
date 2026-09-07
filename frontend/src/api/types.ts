@@ -716,6 +716,11 @@ export interface NotificationChannel {
   serverchan: PushProviderConfig
   pushdeer: PushProviderConfig
   ntfy: PushProviderConfig
+  // 轻量渠道（email/bark/pushplus/serverchan/pushdeer/ntfy）自定义模板，留空用默认格式
+  sms_title_template: string
+  sms_body_template: string
+  call_title_template: string
+  call_body_template: string
   forward_sms: boolean
   forward_calls: boolean
   device_name: string
@@ -790,6 +795,10 @@ export const DEFAULT_NOTIFICATION_CHANNEL: NotificationChannel = {
   serverchan: { url: '', credential: '', topic: '' },
   pushdeer: { url: '', credential: '', topic: '' },
   ntfy: { url: '', credential: '', topic: '' },
+  sms_title_template: '',
+  sms_body_template: '',
+  call_title_template: '',
+  call_body_template: '',
   forward_sms: true,
   forward_calls: true,
   device_name: '',

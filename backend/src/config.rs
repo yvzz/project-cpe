@@ -144,6 +144,16 @@ pub struct NotificationChannel {
     pub pushdeer: PushProviderConfig,
     #[serde(default)]
     pub ntfy: PushProviderConfig,
+    /// 轻量渠道（Bark/邮件/pushplus/serverchan/pushdeer/ntfy）自定义模板，
+    /// 支持 {{变量}} 占位；留空使用内置默认格式
+    #[serde(default)]
+    pub sms_title_template: String,
+    #[serde(default)]
+    pub sms_body_template: String,
+    #[serde(default)]
+    pub call_title_template: String,
+    #[serde(default)]
+    pub call_body_template: String,
     /// 全局开关
     pub forward_sms: bool,
     pub forward_calls: bool,
@@ -162,6 +172,10 @@ impl Default for NotificationChannel {
             serverchan: PushProviderConfig::default(),
             pushdeer: PushProviderConfig::default(),
             ntfy: PushProviderConfig::default(),
+            sms_title_template: String::new(),
+            sms_body_template: String::new(),
+            call_title_template: String::new(),
+            call_body_template: String::new(),
             forward_sms: true,
             forward_calls: true,
         }

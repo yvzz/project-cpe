@@ -316,6 +316,50 @@ function PushProviderForm({ label, config, onChange }: { label: string; config: 
   )
 }
 
+// 轻量渠道（Bark/邮件/pushplus/serverchan/pushdeer/ntfy）消息模板编辑，
+// 短信/通话各一对 标题+正文，留空用内置默认格式
+function MessageTemplateForm({ config, onChange }: {
+  config: NotificationChannel
+  onChange: (c: Partial<NotificationChannel>) => void
+}) {
+  return (
+    <Box>
+      <Typography variant="body2" color="text.secondary" mb={2}>
+        自定义推送消息模板，支持 <code>{'{{变量}}'}</code> 占位；留空使用默认格式。
+      </Typography>
+      <Grid container spacing={2}>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <TextField fullWidth size="small" label="短信标题模板" value={config.sms_title_template}
+            onChange={e => onChange({ sms_title_template: e.target.value })}
+            placeholder="默认：📱短信" />
+        </Grid>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <TextField fullWidth size="small" label="通话标题模板" value={config.call_title_template}
+            onChange={e => onChange({ call_title_template: e.target.value })}
+            placeholder="默认：📞来电提醒" />
+        </Grid>
+        <Grid size={{ xs: 12 }}>
+          <TextField fullWidth multiline minRows={3} label="短信正文模板" value={config.sms_body_template}
+            onChange={e => onChange({ sms_body_template: e.target.value })}
+            placeholder={'默认：来自：{{phone_number}}\\n内容：{{content}}\\n\\n本机号码：{{device_name}}\\n时间：{{local_time}}'} />
+        </Grid>
+        <Grid size={{ xs: 12 }}>
+          <TextField fullWidth multiline minRows={3} label="通话正文模板" value={config.call_body_template}
+            onChange={e => onChange({ call_body_template: e.target.value })}
+            placeholder={'默认：来电号码：{{phone_number}}\\n时长：{{duration}}秒\\n\\n本机号码：{{device_name}}\\n时间：{{local_time}}'} />
+        </Grid>
+      </Grid>
+      <Alert severity="info" sx={{ mt: 2 }}>
+        <Typography variant="body2">
+          <strong>可用变量：</strong><br/>
+          短信: <code>{'{{phone_number}}'}</code>、<code>{'{{content}}'}</code>、<code>{'{{direction_cn}}'}</code>、<code>{'{{status}}'}</code>、<code>{'{{device_name}}'}</code>、<code>{'{{local_time}}'}</code><br/>
+          通话: <code>{'{{phone_number}}'}</code>、<code>{'{{duration}}'}</code>、<code>{'{{direction_cn}}'}</code>、<code>{'{{answered}}'}</code>、<code>{'{{device_name}}'}</code>、<code>{'{{local_time}}'}</code>
+        </Typography>
+      </Alert>
+    </Box>
+  )
+}
+
 export default function ConfigurationPage() {
   const { refreshInterval, refreshKey } = useRefreshInterval()
   const [loading, setLoading] = useState(true)
@@ -1472,6 +1516,18 @@ export default function ConfigurationPage() {
               <Alert severity="info">已关闭通知渠道，不推送任何消息。</Alert>
             )}
 
+            {/* 轻量渠道消息模板（Bark/邮件/推送服务共用） */}
+            {['email', 'bark', 'pushplus', 'serverchan', 'pushdeer', 'ntfy'].includes(notificationChannel.channel) && (
+              <>
+                <Divider sx={{ my: 2 }} />
+                <Typography variant="subtitle2" fontWeight={600} mb={1}>消息模板</Typography>
+                <MessageTemplateForm
+                  config={notificationChannel}
+                  onChange={c => setNotificationChannel(prev => ({ ...prev, ...c }))}
+                />
+              </>
+            )}
+
             <Divider sx={{ my: 2 }} />
 
             {/* 转发选项（仅在非 none 时显示） */}
@@ -1504,8 +1560,8 @@ export default function ConfigurationPage() {
               </Box>
             )}
 
-            {/* 模板变量提示 */}
-            {notificationChannel.channel !== 'none' && notificationChannel.channel !== 'email' && notificationChannel.channel !== 'bark' && (
+            {/* 模板变量提示（整包 JSON 模板渠道） */}
+            {['dingtalk', 'feishu', 'wecom'].includes(notificationChannel.channel) && (
               <Alert severity="info" sx={{ mb: 2 }}>
                 <Typography variant="body2">
                   <strong>支持的模板变量：</strong><br/>
