@@ -1432,7 +1432,7 @@ export default function ConfigurationPage() {
                           borderColor: notificationChannel.channel === opt.value ? 'primary.main' : 'divider',
                           borderRadius: 2,
                           cursor: 'pointer',
-                          bgcolor: notificationChannel.channel === opt.value ? 'primary.light' : 'background.paper',
+                          bgcolor: 'background.paper',
                           '&:hover': { borderColor: 'primary.main' },
                           transition: 'all 0.2s',
                         }}
