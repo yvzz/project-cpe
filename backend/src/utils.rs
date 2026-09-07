@@ -603,6 +603,40 @@ pub fn read_interface_stats(interface: &str) -> Result<(u64, u64), String> {
     Ok((rx_bytes, tx_bytes))
 }
 
+/// 原子写文件（写临时文件 → fsync → rename → fsync 目录）。
+///
+/// 断电是本设备常态，仅 rename 不保证数据落盘：闪存文件系统（UBIFS/ext4）上
+/// rename 可能先于文件数据持久化，断电后会留下一个"目录项存在但内容缺失"的
+/// 新文件，重启后解析失败被当作损坏文件而清零。因此：
+/// 1. rename 前 `sync_all` 把文件数据+大小冲到介质；
+/// 2. rename 后对父目录 fsync，把目录项变更持久化。
+pub fn atomic_write_sync(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::fs;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // 临时文件名 = 原文件名 + ".tmp"（不用 with_extension，避免对非 .json 路径语义漂移）
+    let tmp = path.with_file_name(format!(
+        "{}.tmp",
+        path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+    ));
+    {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(content.as_bytes())?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, path)?;
+    // 目录 fsync：确保 rename 本身持久化（Linux 上对目录 fd sync_all 即可）
+    if let Some(parent) = path.parent() {
+        if let Ok(d) = fs::File::open(parent) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(())
+}
+
 /// 获取所有活跃的网络接口列表
 ///
 /// # Returns

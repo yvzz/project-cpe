@@ -73,9 +73,13 @@ pub struct DataUsageTracker {
 impl DataUsageTracker {
     /// 创建追踪器；若已存在持久化文件则加载，否则从零开始。
     ///
-    /// 文件存在但解析失败（典型：断电瞬间非原子写盘导致 JSON 截断）时，
-    /// 先把坏文件改名备份再从零累计，保留现场便于排查，而不是直接覆盖。
+    /// 恢复顺序：主文件 → 同名 `.tmp` 临时文件（rename 前断电遗留的较新快照）→ 从零。
+    /// 主文件损坏时先把坏文件改名备份（`.json.corrupt`）再尝试 tmp 恢复，保留现场便于排查。
     pub fn new(path: PathBuf) -> Self {
+        let tmp_path = path.with_file_name(format!(
+            "{}.tmp",
+            path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+        ));
         let loaded = fs::read_to_string(&path)
             .ok()
             .and_then(|c| serde_json::from_str::<DataUsageState>(&c).ok());
@@ -88,7 +92,7 @@ impl DataUsageTracker {
                         Ok(_) => warn!(
                             path = %path.display(),
                             backup = %backup.display(),
-                            "data_usage.json 解析失败（可能断电损坏），已备份并从零累计"
+                            "data_usage.json 解析失败（可能断电损坏），已备份并尝试从 .tmp 恢复"
                         ),
                         Err(e) => warn!(
                             path = %path.display(),
@@ -97,7 +101,17 @@ impl DataUsageTracker {
                         ),
                     }
                 }
-                DataUsageState::default()
+                // 主文件缺失/损坏：尝试遗留的 .tmp（写盘成功但 rename 前断电的产物）
+                let recovered = fs::read_to_string(&tmp_path)
+                    .ok()
+                    .and_then(|c| serde_json::from_str::<DataUsageState>(&c).ok());
+                match recovered {
+                    Some(s) => {
+                        info!(path = %tmp_path.display(), "从遗留 .tmp 临时文件恢复流量累计");
+                        s
+                    }
+                    None => DataUsageState::default(),
+                }
             }
         };
         Self {
@@ -108,18 +122,14 @@ impl DataUsageTracker {
 
     /// 持久化到磁盘（仅在状态变化时调用，避免无谓写盘）。
     ///
-    /// 采用"写临时文件 + rename"的原子写法：rename 在同一文件系统上是原子的，
+    /// 使用带 fsync 的原子写（见 utils::atomic_write_sync）：
     /// 断电时要么是旧文件、要么是完整新文件，不会出现截断的半截 JSON。
     fn persist(&self) {
         let Ok(s) = serde_json::to_string_pretty(&*self.state.lock().unwrap()) else {
             return;
         };
-        if let Some(parent) = self.path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        if fs::write(&tmp, s).is_ok() {
-            let _ = fs::rename(&tmp, &self.path);
+        if let Err(e) = crate::utils::atomic_write_sync(&self.path, &s) {
+            warn!(path = %self.path.display(), error = %e, "data_usage.json 写盘失败");
         }
     }
 

@@ -526,20 +526,18 @@ impl ConfigManager {
     }
     
     /// 保存配置到文件
+    ///
+    /// 使用带 fsync 的原子写（见 utils::atomic_write_sync）：断电是常态，
+    /// 裸 fs::write 在断电时可能把 config.json 截断成半截 JSON，导致所有配置丢失。
     pub fn save(&self) -> Result<(), String> {
         let config = self.config.read().unwrap();
         let content = serde_json::to_string_pretty(&*config)
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
-        
-        // 确保目录存在
-        if let Some(parent) = self.config_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create config directory: {}", e))?;
-        }
-        
-        fs::write(&self.config_path, content)
+        drop(config);
+
+        crate::utils::atomic_write_sync(&self.config_path, &content)
             .map_err(|e| format!("Failed to write config file: {}", e))?;
-        
+
         Ok(())
     }
     
