@@ -70,7 +70,6 @@ import type {
   NotificationChannel,
   InitScriptResponse,
   SetInitScriptRequest,
-  WebhookConfig,
   WebhookTestResponse,
   SmsPushConfig,
   RefreshConfigResponse,
@@ -649,7 +648,6 @@ class UDX710API {
     })
   }
 
->>>>>>> origin/main
   // ========== OTA 更新 ==========
 
   // 获取 OTA 状态
