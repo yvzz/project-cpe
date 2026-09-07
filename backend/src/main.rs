@@ -45,6 +45,7 @@ mod models;
 mod ota;
 mod scheduled_reboot;
 mod serial;
+mod sms_push;
 mod sms_listener;
 mod state;
 mod usage;
@@ -52,14 +53,15 @@ mod usb_switch;
 mod utils;
 mod webhook;
 
-use config::{ConfigManager, get_default_config_path};
+use config::{ensure_loader_hooks_init, get_default_config_path, get_persistent_root_dir, ConfigManager};
 use dbus::init_data_connection;
 use handlers::*;
 use db::Database;
 use crate::db::cleanup_old_sms;
 use crate::db::cleanup_old_calls;
-use state::AppState;
+use state::{AppState, FrontendRuntime};
 use crate::usage::DataUsageTracker;
+use sms_push::SmsPushSender;
 use webhook::WebhookSender;
 use scheduled_reboot::ScheduledRebootManager;
 
@@ -76,12 +78,6 @@ fn get_www_dir() -> PathBuf {
     // 拼接 www 目录
     exe_dir.join("www")
 }
-
-/// 数据连接 Watchdog 的基础轮询间隔（秒）
-///
-/// 仅决定 iptables 检查节奏和退避计时的粒度；
-/// 激活失败的实际重试间隔由 dbus 模块内的指数退避决定。
-const WATCHDOG_INTERVAL_SECS: u64 = 5;
 
 /// 数据库保留条数：短信表最多保留最近这么多条，超出由维护任务清理
 const DB_RETENTION_SMS: i64 = 2000;
@@ -178,12 +174,26 @@ async fn main() -> Result<()> {
     let dbus_conn = Arc::new(Connection::system().await?);
     
     // 创建 SMS 数据库（存储在可执行文件同级目录）
-    let exe_dir = std::env::current_exe()
-        .expect("Failed to get executable path")
-        .parent()
-        .expect("Failed to get executable directory")
-        .to_path_buf();
-    let db_path = exe_dir.join("data.db");
+    // 创建 SMS 数据库（存储在持久化目录；上游新增旧路径迁移逻辑）
+    let db_path = get_persistent_root_dir().join("data.db");
+    if !db_path.exists() {
+        if let Some(exe_dir) = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        {
+            let legacy_db_path = exe_dir.join("data.db");
+            if legacy_db_path != db_path && legacy_db_path.exists() {
+                if let Some(parent) = db_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match std::fs::copy(&legacy_db_path, &db_path) {
+                    Ok(_) => info!(from = ?legacy_db_path, to = ?db_path, "Migrated legacy data.db"),
+                    Err(error) => warn!(error = %error, from = ?legacy_db_path, to = ?db_path, "Failed to migrate legacy data.db"),
+                }
+            }
+        }
+    }
+    // 注意：本项目 db.rs 已改造为异步（tokio），Database::new 必须 .await（与上游同步版不同）
     let app_db = Arc::new(Database::new(db_path).await?);
 
     // 启动数据库维护任务：定期清理短信/通话记录，避免 data.db 无限增长撑爆分区
@@ -217,15 +227,24 @@ async fn main() -> Result<()> {
     info!(path = ?config_path, "Loading config");
     let config_manager = Arc::new(ConfigManager::new(config_path.clone()));
 
+    // 开机自启动脚本挂钩（上游 InitScript 功能）
+    if let Err(err) = ensure_loader_hooks_init() {
+        warn!(error = %err, "Failed to ensure loader bootstrap");
+    }
+
     // 数据流量累计追踪器（持久化到 config 同目录下的 data_usage.json）
     let usage_path = config_path
         .parent()
         .map(|p| p.join("data_usage.json"))
-        .unwrap_or_else(|| exe_dir.join("data_usage.json"));
+        .unwrap_or_else(|| get_persistent_root_dir().join("data_usage.json"));
     let data_usage_tracker = Arc::new(DataUsageTracker::new(usage_path));
-    
+
     // 初始化 Webhook 发送器
     let webhook_sender = Arc::new(WebhookSender::new(Arc::clone(&config_manager)));
+    // 初始化短信推送发送器（上游）
+    let sms_push_sender = Arc::new(SmsPushSender::new(Arc::clone(&config_manager)));
+    // 初始化前端在线状态跟踪（上游，自适应轮询）
+    let frontend_runtime = Arc::new(FrontendRuntime::new());
 
     // 初始化定时重启管理器
     let scheduled_reboot_manager = Arc::new(ScheduledRebootManager::new(Arc::clone(&config_manager)));
@@ -252,8 +271,9 @@ async fn main() -> Result<()> {
         let conn_clone = Connection::system().await?;
         let db_clone = Arc::clone(&app_db);
         let webhook_clone = Arc::clone(&webhook_sender);
+        let sms_push_clone = Arc::clone(&sms_push_sender);
         tokio::spawn(async move {
-            let _ = sms_listener::start_sms_listener(conn_clone, db_clone, webhook_clone).await;
+            let _ = sms_listener::start_sms_listener(conn_clone, db_clone, webhook_clone, sms_push_clone).await;
         });
     }
     
@@ -279,16 +299,18 @@ async fn main() -> Result<()> {
     }
     
     // 启动数据连接 Watchdog
-    // WATCHDOG_INTERVAL_SECS 是基础轮询间隔（用于 iptables 检查和退避计时精度），
-    // 数据连接激活失败后会按 5s→15s→30s→60s→120s 指数退避，不会固定间隔重试
+    // 轮询间隔自适应（上游 RefreshConfig）：前端活跃时高频、空闲时降频；
+    // 数据连接激活失败后仍按 5s→15s→30s→60s→120s 指数退避
     {
         let conn_clone = Arc::clone(&dbus_conn);
         let cfg_clone = Arc::clone(&config_manager);
+        let fe_clone = Arc::clone(&frontend_runtime);
         let usage_clone = Arc::clone(&data_usage_tracker);
         tokio::spawn(async move {
             // 初始延迟 5 秒，等待系统稳定
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;            tracing::info!(interval = WATCHDOG_INTERVAL_SECS, "Watchdog started");
-            dbus::data_connection_watchdog(conn_clone, WATCHDOG_INTERVAL_SECS, cfg_clone, usage_clone).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            tracing::info!("Watchdog started (adaptive interval)");
+            dbus::data_connection_watchdog(conn_clone, cfg_clone, fe_clone, usage_clone).await;
         });
     }
 
@@ -306,6 +328,8 @@ async fn main() -> Result<()> {
         webhook_sender,
         scheduled_reboot_manager,
         data_usage_tracker,
+        sms_push_sender,
+        frontend_runtime,
     );
 
     // Build routes - 使用统一的 AppState
@@ -379,9 +403,16 @@ async fn main() -> Result<()> {
         .route("/api/system/device-name", get(get_device_name_handler).post(set_device_name_handler).options(options_handler))
         .route("/api/system/scheduled-reboot", get(get_scheduled_reboot_handler).post(set_scheduled_reboot_handler).options(options_handler))
         .route("/api/health", get(health_check))
+        // ========== init.sh 管理接口 ==========
+        .route("/api/init-script", get(get_init_script_handler).post(set_init_script_handler).options(options_handler))
         // ========== Webhook 配置接口 ==========
         .route("/api/webhook/config", get(get_webhook_config_handler).post(set_webhook_config_handler).options(options_handler))
         .route("/api/webhook/test", post(test_webhook_handler).options(options_handler))
+        // ========== 短信推送配置接口 ==========
+        .route("/api/sms-push/config", get(get_sms_push_config_handler).post(set_sms_push_config_handler).options(options_handler))
+        .route("/api/sms-push/test", post(test_sms_push_handler).options(options_handler))
+        .route("/api/refresh/config", get(get_refresh_config_handler).post(set_refresh_config_handler).options(options_handler))
+        .route("/api/refresh/heartbeat", post(frontend_refresh_heartbeat_handler).options(options_handler))
         // ========== OTA 更新接口 ==========
         .route("/api/ota/status", get(get_ota_status_handler).options(options_handler))
         .route("/api/ota/upload", post(upload_ota_handler).options(options_handler)

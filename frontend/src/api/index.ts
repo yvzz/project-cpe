@@ -68,7 +68,12 @@ import type {
   ConnectivityCheckResponse,
   CallHistoryResponse,
   NotificationChannel,
+  InitScriptResponse,
+  SetInitScriptRequest,
+  WebhookConfig,
   WebhookTestResponse,
+  SmsPushConfig,
+  RefreshConfigResponse,
   OtaStatusResponse,
   OtaUploadResponse,
 } from './types'
@@ -596,6 +601,55 @@ class UDX710API {
     })
   }
 
+  async getSmsPushConfig() {
+    return request<ApiResponse<SmsPushConfig>>('/sms-push/config')
+  }
+
+  async setSmsPushConfig(config: SmsPushConfig) {
+    return request<ApiResponse<Record<string, unknown>>>('/sms-push/config', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    })
+  }
+
+  async testSmsPush() {
+    return request<ApiResponse<WebhookTestResponse>>('/sms-push/test', {
+      method: 'POST',
+    })
+  }
+
+  async getRefreshConfig() {
+    return request<ApiResponse<RefreshConfigResponse>>('/refresh/config')
+  }
+
+  async setRefreshConfig(intervalMs: number) {
+    return request<ApiResponse<RefreshConfigResponse>>('/refresh/config', {
+      method: 'POST',
+      body: JSON.stringify({ interval_ms: intervalMs }),
+    })
+  }
+
+  async sendRefreshHeartbeat() {
+    return request<ApiResponse<RefreshConfigResponse>>('/refresh/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+  }
+
+  async getInitScript() {
+    return request<ApiResponse<InitScriptResponse>>('/init-script')
+  }
+
+  // 保存 init.sh 内容，并确保 loader.sh 调用它
+  async setInitScript(script: string) {
+    const body: SetInitScriptRequest = { script }
+    return request<ApiResponse<InitScriptResponse>>('/init-script', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  }
+
+>>>>>>> origin/main
   // ========== OTA 更新 ==========
 
   // 获取 OTA 状态

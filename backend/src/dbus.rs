@@ -24,6 +24,7 @@ use crate::models::{
 };
 use crate::serial::with_serial;
 use crate::usage::DataUsageTracker;
+use crate::state::FrontendRuntime;
 
 /// ofono NetworkMonitor 代理接口
 #[proxy(
@@ -1129,13 +1130,13 @@ async fn enforce_data_limit(
 ///
 /// # Arguments
 /// * `conn` - D-Bus 连接
-/// * `interval_secs` - 基础轮询间隔（秒），仅用于 iptables 检查和退避计时精度
-/// * `config` - 配置管理器（读取流量限额设置）
+/// * `config` - 配置管理器（读取流量限额设置 + 前端刷新间隔配置）
+/// * `frontend_runtime` - 前端在线状态（上游：有前端活跃时用高频轮询，空闲时降频）
 /// * `usage` - 数据流量追踪器（采样累计 + 限额阻断状态）
 pub async fn data_connection_watchdog(
     conn: std::sync::Arc<Connection>,
-    interval_secs: u64,
     config: std::sync::Arc<ConfigManager>,
+    frontend_runtime: std::sync::Arc<FrontendRuntime>,
     usage: std::sync::Arc<DataUsageTracker>,
 ) {
     use crate::iptables::{flush_iptables, get_iptables_rule_count};
@@ -1145,7 +1146,16 @@ pub async fn data_connection_watchdog(
     let mut state = WatchdogState::new();
 
     loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
+        // 自适应轮询间隔（上游）：前端活跃时高频检查，空闲时降频
+        let refresh = config.get_refresh();
+        let heartbeat_timeout = Duration::from_millis(refresh.heartbeat_timeout_ms());
+        let interval = if frontend_runtime.is_recent(heartbeat_timeout) {
+            Duration::from_millis(refresh.active_watchdog_interval_ms())
+        } else {
+            Duration::from_millis(refresh.idle_watchdog_interval_ms())
+        };
+
+        tokio::time::sleep(interval).await;
 
         // 1. 检查并清空 iptables 规则
         match get_iptables_rule_count().await {

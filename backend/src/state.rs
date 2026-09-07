@@ -2,17 +2,16 @@
  * @Author: 1orz cloudorzi@gmail.com
  * @Date: 2025-12-10 10:09:22
  * @LastEditors: 1orz cloudorzi@gmail.com
- * @LastEditTime: 2025-12-13 12:46:18
+ * @LastEditTime: 2026-04-18 20:15:00
  * @FilePath: /udx710-backend/backend/src/state.rs
- * @Description: 
- * 
- * Copyright (c) 2025 by 1orz, All Rights Reserved. 
+ * @Description:
+ *
+ * Copyright (c) 2025 by 1orz, All Rights Reserved.
  */
-//! 应用状态模块
-//!
-//! 统一管理应用的共享状态
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
+
 use axum::extract::FromRef;
 use zbus::Connection;
 
@@ -20,29 +19,49 @@ use crate::config::ConfigManager;
 use crate::db::Database;
 use crate::scheduled_reboot::ScheduledRebootManager;
 use crate::usage::DataUsageTracker;
+use crate::sms_push::SmsPushSender;
 use crate::webhook::WebhookSender;
 
-/// 应用全局状态
-///
-/// 统一管理所有共享资源，避免在路由中多次调用 `.with_state()`
+pub struct FrontendRuntime {
+    last_seen: RwLock<Option<Instant>>,
+}
+
+impl FrontendRuntime {
+    pub fn new() -> Self {
+        Self {
+            last_seen: RwLock::new(None),
+        }
+    }
+
+    pub fn mark_seen(&self) {
+        *self.last_seen.write().unwrap() = Some(Instant::now());
+    }
+
+    pub fn is_recent(&self, timeout: Duration) -> bool {
+        self.last_seen
+            .read()
+            .unwrap()
+            .is_some_and(|last_seen| last_seen.elapsed() <= timeout)
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
-    /// D-Bus 连接（用于与 ofono 通信）
     pub dbus_conn: Arc<Connection>,
-    /// 数据库连接（用于存储 SMS 和通话记录）
     pub database: Arc<Database>,
-    /// 配置管理器（用于管理 Webhook 等配置）
     pub config_manager: Arc<ConfigManager>,
-    /// Webhook 发送器（用于转发 SMS 和通话通知）
     pub webhook_sender: Arc<WebhookSender>,
     /// 定时重启调度器
     pub scheduled_reboot_manager: Arc<ScheduledRebootManager>,
     /// 数据流量累计追踪器（流量限额功能）
     pub data_usage_tracker: Arc<DataUsageTracker>,
+    /// 短信推送发送器（上游）
+    pub sms_push_sender: Arc<SmsPushSender>,
+    /// 前端在线状态（上游，自适应轮询用）
+    pub frontend_runtime: Arc<FrontendRuntime>,
 }
 
 impl AppState {
-    /// 创建新的应用状态
     pub fn new(
         dbus_conn: Arc<Connection>,
         database: Arc<Database>,
@@ -50,6 +69,8 @@ impl AppState {
         webhook_sender: Arc<WebhookSender>,
         scheduled_reboot_manager: Arc<ScheduledRebootManager>,
         data_usage_tracker: Arc<DataUsageTracker>,
+        sms_push_sender: Arc<SmsPushSender>,
+        frontend_runtime: Arc<FrontendRuntime>,
     ) -> Self {
         Self {
             dbus_conn,
@@ -58,12 +79,11 @@ impl AppState {
             webhook_sender,
             scheduled_reboot_manager,
             data_usage_tracker,
+            sms_push_sender,
+            frontend_runtime,
         }
     }
 }
-
-// 实现 FromRef trait，允许从 AppState 中提取子状态
-// 这样现有的 handler 可以继续使用 State<Arc<Connection>> 等类型
 
 impl FromRef<AppState> for Arc<Connection> {
     fn from_ref(state: &AppState) -> Self {
@@ -98,6 +118,18 @@ impl FromRef<AppState> for Arc<ScheduledRebootManager> {
 impl FromRef<AppState> for Arc<DataUsageTracker> {
     fn from_ref(state: &AppState) -> Self {
         state.data_usage_tracker.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<SmsPushSender> {
+    fn from_ref(state: &AppState) -> Self {
+        state.sms_push_sender.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<FrontendRuntime> {
+    fn from_ref(state: &AppState) -> Self {
+        state.frontend_runtime.clone()
     }
 }
 

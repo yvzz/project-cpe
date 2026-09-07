@@ -395,6 +395,10 @@ pub fn apply_ota_update(restart_now: bool) -> Result<String, String> {
     let _ = fs::remove_dir_all(OTA_WWW_PATH);
     copy_dir_recursive(&staging_www, OTA_WWW_PATH)?;
 
+    // 应用后统一修复权限（二进制 755 / www 目录 755 / 文件 644），并重建 loader 引导钩子
+    fix_file_permissions("/home/root")?;
+    crate::config::ensure_loader_hooks_init()?;
+
     // 清理暂存目录
     let _ = fs::remove_dir_all(OTA_STAGING_DIR);
 
@@ -461,4 +465,31 @@ fn detect_zip_format(data: &[u8]) -> bool {
 
     // 检查是否是 ZIP 格式
     data[0] == 0x50 && data[1] == 0x4B && data[2] == 0x03 && data[3] == 0x04
+}
+
+/// 统一修复 OTA 相关文件权限（来自上游实现）：
+/// 二进制 755，www 下目录 755、文件 644。
+/// 解包时已按条目设置过权限，此函数用于应用后兜底（如复制过程丢失权限位）。
+fn fix_file_permissions(root: &str) -> Result<(), String> {
+    let binary_path = format!("{}/udx710", root);
+    let www_path = format!("{}/www", root);
+
+    if Path::new(&binary_path).exists() {
+        Command::new("chmod")
+            .args(["755", &binary_path])
+            .output()
+            .map_err(|e| format!("Failed to chmod binary {}: {}", binary_path, e))?;
+    }
+
+    if Path::new(&www_path).exists() {
+        let _ = Command::new("find")
+            .args([&www_path, "-type", "d", "-exec", "chmod", "755", "{}", "+"])
+            .output();
+
+        let _ = Command::new("find")
+            .args([&www_path, "-type", "f", "-exec", "chmod", "644", "{}", "+"])
+            .output();
+    }
+
+    Ok(())
 }
