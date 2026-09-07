@@ -365,7 +365,7 @@ export default function ConfigurationPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
-  const [expanded, setExpanded] = useState<string | false>('dataConnection')
+  const [expanded, setExpanded] = useState<string | false>(false)
   
   const [dataStatus, setDataStatus] = useState(false)
   const [dataConfig, setDataConfig] = useState<DataConnectionConfig>({ limit_gb: 0, auto_disable: false, reset_day: 1 })
@@ -819,7 +819,7 @@ export default function ConfigurationPage() {
           <AccordionSummary expandIcon={<ExpandMore />}>
             <Box display="flex" alignItems="center" gap={1} width="100%">
               <Wifi color="primary" />
-              <Typography fontWeight={600}>数据连接配置</Typography>
+              <Typography fontWeight={600}>数据连接</Typography>
               <Box flexGrow={1} />
               <Chip
                 label={dataStatus ? '已启用' : '已禁用'}
@@ -1049,7 +1049,7 @@ export default function ConfigurationPage() {
           <AccordionSummary expandIcon={<ExpandMore />}>
             <Box display="flex" alignItems="center" gap={1} width="100%">
               <Usb color="primary" />
-              <Typography fontWeight={600}>USB 模式配置</Typography>
+              <Typography fontWeight={600}>USB 模式</Typography>
               <Box flexGrow={1} />
               <Chip
                 label={usbMode?.current_mode_name || 'N/A'}
