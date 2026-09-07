@@ -13,7 +13,7 @@
 use crate::utils::read_interface_stats;
 use chrono::{Datelike, Local};
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{info, warn};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -22,6 +22,13 @@ use std::sync::Mutex;
 const CELLULAR_INTERFACE: &str = "usb0";
 /// 1 GB = 10^9 字节（与运营商计费口径一致，十进制）
 pub const BYTES_PER_GB: u64 = 1_000_000_000;
+
+/// 系统时间早于该年份视为"时钟未同步"。
+///
+/// 设备无 RTC 电池，断电重启后系统时间会回到 1970-01-01（日期=1 号），
+/// 若此时执行按日清零，会把上个月的累计流量误清掉（默认清零日恰好是 1 号）。
+/// 因此时钟未同步（早于项目时代）期间绝不自动清零，等 NTP 同步后再正常判断。
+const MIN_PLAUSIBLE_YEAR: i32 = 2025;
 
 /// 持久化状态
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -65,14 +72,33 @@ pub struct DataUsageTracker {
 
 impl DataUsageTracker {
     /// 创建追踪器；若已存在持久化文件则加载，否则从零开始。
+    ///
+    /// 文件存在但解析失败（典型：断电瞬间非原子写盘导致 JSON 截断）时，
+    /// 先把坏文件改名备份再从零累计，保留现场便于排查，而不是直接覆盖。
     pub fn new(path: PathBuf) -> Self {
-        let state = if path.exists() {
-            fs::read_to_string(&path)
-                .ok()
-                .and_then(|c| serde_json::from_str::<DataUsageState>(&c).ok())
-                .unwrap_or_default()
-        } else {
-            DataUsageState::default()
+        let loaded = fs::read_to_string(&path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<DataUsageState>(&c).ok());
+        let state = match loaded {
+            Some(s) => s,
+            None => {
+                if path.exists() {
+                    let backup = path.with_extension("json.corrupt");
+                    match fs::rename(&path, &backup) {
+                        Ok(_) => warn!(
+                            path = %path.display(),
+                            backup = %backup.display(),
+                            "data_usage.json 解析失败（可能断电损坏），已备份并从零累计"
+                        ),
+                        Err(e) => warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "data_usage.json 解析失败且备份失败，将从零累计"
+                        ),
+                    }
+                }
+                DataUsageState::default()
+            }
         };
         Self {
             state: Mutex::new(state),
@@ -80,13 +106,20 @@ impl DataUsageTracker {
         }
     }
 
-    /// 持久化到磁盘（仅在状态变化时调用，避免无谓写盘）
+    /// 持久化到磁盘（仅在状态变化时调用，避免无谓写盘）。
+    ///
+    /// 采用"写临时文件 + rename"的原子写法：rename 在同一文件系统上是原子的，
+    /// 断电时要么是旧文件、要么是完整新文件，不会出现截断的半截 JSON。
     fn persist(&self) {
-        if let Ok(s) = serde_json::to_string_pretty(&*self.state.lock().unwrap()) {
-            if let Some(parent) = self.path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::write(&self.path, s);
+        let Ok(s) = serde_json::to_string_pretty(&*self.state.lock().unwrap()) else {
+            return;
+        };
+        if let Some(parent) = self.path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let tmp = self.path.with_extension("json.tmp");
+        if fs::write(&tmp, s).is_ok() {
+            let _ = fs::rename(&tmp, &self.path);
         }
     }
 
@@ -166,10 +199,26 @@ impl DataUsageTracker {
     /// 行为：仅当"今天是 `reset_day` 且该日尚未清零"时执行——清零累计收发字节、
     /// 解除限额阻断（新计费周期开始，恢复数据服务），并记录 `last_reset_date` 防同日重复清零。
     ///
-    /// 边界：若设的值超过当月实际天数（如 2 月选 31），按当月最后一天清零，
-    /// 这样选 31 在短月也能在月末清零（与"月底清零"意图一致）。
+    /// 边界：
+    /// - 若设的值超过当月实际天数（如 2 月选 31），按当月最后一天清零，
+    ///   这样选 31 在短月也能在月末清零（与"月底清零"意图一致）；
+    /// - **时钟未同步（系统时间早于 `MIN_PLAUSIBLE_YEAR`）时绝不执行**——
+    ///   设备无 RTC 电池，断电重启后时间回到 1970-01-01（日期=1 号），
+    ///   若不设防会在每次断电重启时把累计流量误清零（历史 bug）。
     pub fn maybe_auto_reset(&self, reset_day: u8) {
         let now = Local::now();
+
+        // 时钟未同步保护：1970 等早期时间的"日期"不可信，跳过清零。
+        // NTP 同步后（同一天内或之后的 watchdog 轮询）会正常执行真实的按日清零。
+        if now.year() < MIN_PLAUSIBLE_YEAR {
+            warn!(
+                year = now.year(),
+                min_plausible_year = MIN_PLAUSIBLE_YEAR,
+                "系统时钟疑似未同步，跳过流量自动清零以防断电重启后误清累计"
+            );
+            return;
+        }
+
         let days_in_month = days_in_month(now.year(), now.month());
         let target = (reset_day.clamp(1, 31) as u32).min(days_in_month);
         if now.day() != target {

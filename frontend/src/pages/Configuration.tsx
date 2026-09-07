@@ -56,6 +56,7 @@ import {
   Timer,
   Edit,
   Save,
+  DataUsage,
 } from '@mui/icons-material'
 import { api } from '../api'
 import ErrorSnackbar from '../components/ErrorSnackbar'
@@ -766,10 +767,35 @@ export default function ConfigurationPage() {
               提示：禁用数据连接将中断所有使用移动网络的应用和服务
             </Alert>
 
+          </AccordionDetails>
+        </Accordion>
+
+        {/* 流量统计（独立面板：用量展示 + 限额 + 清零日 + 重置） */}
+        <Accordion
+          expanded={expanded === 'dataUsage'}
+          onChange={handleAccordionChange('dataUsage')}
+        >
+          <AccordionSummary expandIcon={<ExpandMore />}>
+            <Box display="flex" alignItems="center" gap={1} width="100%">
+              <DataUsage color="primary" />
+              <Typography fontWeight={600}>流量统计</Typography>
+              <Box flexGrow={1} />
+              <Chip
+                label={`已用 ${((dataUsage?.total_bytes ?? 0) / 1e9).toFixed(2)} GB`}
+                color={dataUsage?.blocked ? 'error' : 'primary'}
+                size="small"
+                onClick={(e: MouseEvent) => e.stopPropagation()}
+              />
+            </Box>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Typography variant="body2" color="text.secondary" paragraph>
+              统计移动网络累计流量（跨重启保留），支持限额控制与按月自动清零。
+            </Typography>
+
             <Divider sx={{ my: 2 }} />
 
-            {/* 流量统计 */}
-            <Typography variant="subtitle2" fontWeight={600} gutterBottom>流量统计</Typography>
+            {/* 用量 */}
             <Typography variant="body2" color="text.secondary">
               已用：{((dataUsage?.total_bytes ?? 0) / 1e9).toFixed(2)} GB
               {dataConfig.limit_gb > 0 && ` / 限额 ${dataConfig.limit_gb} GB`}
